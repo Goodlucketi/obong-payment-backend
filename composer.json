@@ -1,0 +1,15 @@
+{
+  "name": "obong/payment-portal-api",
+  "description": "PHP API backend for the Obong student payment portal",
+  "type": "project",
+  "require": {
+    "php": ">=8.2",
+    "ext-pdo": "*",
+    "ext-pdo_mysql": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Obong\\Payment\\": "src/"
+    }
+  }
+}
