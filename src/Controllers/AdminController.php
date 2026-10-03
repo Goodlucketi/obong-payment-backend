@@ -333,6 +333,7 @@ final class AdminController extends Controller
             'invoiceCount' => (int) $type['invoice_count'],
             'applicableLevel' => $type['applicable_level'],
             'isMandatory' => (bool) $type['is_mandatory'],
+            'allowPartialPayment' => (bool) $type['allow_partial_payment'],
             'status' => $type['status'],
             'description' => $type['description'],
         ], $rows);
@@ -360,6 +361,7 @@ final class AdminController extends Controller
         $code = strtoupper(trim((string) ($body['code'] ?? preg_replace('/[^A-Z0-9]+/', '_', strtoupper($name)))));
         $applicableLevel = trim((string) ($body['applicableLevel'] ?? 'All Levels'));
         $isMandatory = !empty($body['isMandatory']);
+        $allowPartialPayment = !empty($body['allowPartialPayment']);
         $status = strtoupper((string) ($body['status'] ?? 'ACTIVE')) === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
 
         $this->db->beginTransaction();
@@ -367,8 +369,8 @@ final class AdminController extends Controller
             [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body);
             $this->assertPaymentTypeScopeAvailable((int) $session['id'], $code, $facultyId, $departmentId, $applicableLevel);
             $this->run(
-                'INSERT INTO payment_types (academic_session_id, faculty_id, department_id, name, code, amount, applicable_level, is_mandatory, status, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $applicableLevel, $isMandatory, $status, trim((string) ($body['description'] ?? '')) ?: null, $actor['id']]
+                'INSERT INTO payment_types (academic_session_id, faculty_id, department_id, name, code, amount, applicable_level, is_mandatory, allow_partial_payment, status, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $applicableLevel, $isMandatory, $allowPartialPayment, $status, trim((string) ($body['description'] ?? '')) ?: null, $actor['id']]
             );
             $paymentTypeId = (int) $this->db->lastInsertId();
 
@@ -388,7 +390,7 @@ final class AdminController extends Controller
         $this->audit($actor, 'Created payment type', 'Payment Type', $code);
         $faculty = $facultyId === null ? null : $this->one('SELECT name FROM faculties WHERE id = ?', [$facultyId]);
         $department = $departmentId === null ? null : $this->one('SELECT name FROM departments WHERE id = ?', [$departmentId]);
-        return ['id' => 'pt_' . $paymentTypeId, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $applicableLevel, 'isMandatory' => $isMandatory, 'status' => $status, 'description' => $body['description'] ?? ''];
+        return ['id' => 'pt_' . $paymentTypeId, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $applicableLevel, 'isMandatory' => $isMandatory, 'allowPartialPayment' => $allowPartialPayment, 'status' => $status, 'description' => $body['description'] ?? ''];
     }
 
     public function updatePaymentType(Request $request, array $params, ?array $actor): array
@@ -415,13 +417,16 @@ final class AdminController extends Controller
         $name = trim((string) ($body['name'] ?? $current['name']));
         $level = trim((string) ($body['applicableLevel'] ?? $current['applicable_level']));
         $mandatory = array_key_exists('isMandatory', $body) ? (int) (bool) $body['isMandatory'] : (int) $current['is_mandatory'];
+        $allowPartialPayment = array_key_exists('allowPartialPayment', $body)
+            ? (int) (bool) $body['allowPartialPayment']
+            : (int) $current['allow_partial_payment'];
         $status = strtoupper((string) ($body['status'] ?? $current['status'])) === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
         $description = $body['description'] ?? $current['description'];
         $this->db->beginTransaction();
         try {
             [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body, $current);
             $this->assertPaymentTypeScopeAvailable((int) $session['id'], $code, $facultyId, $departmentId, $level, $id);
-            $this->run('UPDATE payment_types SET academic_session_id = ?, faculty_id = ?, department_id = ?, name = ?, code = ?, amount = ?, applicable_level = ?, is_mandatory = ?, status = ?, description = ? WHERE id = ?', [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $level, $mandatory, $status, $description, $id]);
+            $this->run('UPDATE payment_types SET academic_session_id = ?, faculty_id = ?, department_id = ?, name = ?, code = ?, amount = ?, applicable_level = ?, is_mandatory = ?, allow_partial_payment = ?, status = ?, description = ? WHERE id = ?', [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $level, $mandatory, $allowPartialPayment, $status, $description, $id]);
             $this->db->commit();
         } catch (\Throwable $exception) {
             if ($this->db->inTransaction()) {
@@ -432,7 +437,7 @@ final class AdminController extends Controller
         $this->audit($actor, 'Updated payment type', 'Payment Type', $code, ['previousCode' => $current['code']]);
         $faculty = $facultyId === null ? null : $this->one('SELECT name FROM faculties WHERE id = ?', [$facultyId]);
         $department = $departmentId === null ? null : $this->one('SELECT name FROM departments WHERE id = ?', [$departmentId]);
-        return ['id' => 'pt_' . $id, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $level, 'isMandatory' => (bool) $mandatory, 'status' => $status, 'description' => $description];
+        return ['id' => 'pt_' . $id, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $level, 'isMandatory' => (bool) $mandatory, 'allowPartialPayment' => (bool) $allowPartialPayment, 'status' => $status, 'description' => $description];
     }
 
     public function deletePaymentType(Request $request, array $params, ?array $actor): array

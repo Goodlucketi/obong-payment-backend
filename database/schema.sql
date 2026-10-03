@@ -108,6 +108,7 @@ CREATE TABLE payment_types (
   faculty_scope_id BIGINT UNSIGNED GENERATED ALWAYS AS (COALESCE(faculty_id, 0)) STORED,
   department_scope_id BIGINT UNSIGNED GENERATED ALWAYS AS (COALESCE(department_id, 0)) STORED,
   is_mandatory BOOLEAN NOT NULL DEFAULT TRUE,
+  allow_partial_payment BOOLEAN NOT NULL DEFAULT FALSE,
   status ENUM('ACTIVE', 'INACTIVE') NOT NULL DEFAULT 'ACTIVE',
   description TEXT NULL,
   created_by BIGINT UNSIGNED NULL,

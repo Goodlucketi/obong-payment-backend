@@ -41,7 +41,7 @@ final class StudentController extends Controller
         $actor = $this->requireActor($actor, 'STUDENT');
         $this->syncMandatoryInvoices((int) $actor['id']);
         $rows = $this->all(
-            'SELECT i.*, s.registration_number, a.name AS session_name, p.id AS type_id, p.name AS payment_type_name FROM invoices i JOIN students s ON s.id = i.student_id JOIN academic_sessions a ON a.id = i.academic_session_id JOIN payment_types p ON p.id = i.payment_type_id WHERE i.student_id = ? ORDER BY i.created_at DESC',
+            'SELECT i.*, s.registration_number, a.name AS session_name, p.id AS type_id, p.name AS payment_type_name, p.allow_partial_payment FROM invoices i JOIN students s ON s.id = i.student_id JOIN academic_sessions a ON a.id = i.academic_session_id JOIN payment_types p ON p.id = i.payment_type_id WHERE i.student_id = ? ORDER BY i.created_at DESC',
             [$actor['id']]
         );
 
@@ -54,6 +54,7 @@ final class StudentController extends Controller
             'session' => $invoice['session_name'],
             'amount' => (float) $invoice['amount'],
             'amountPaid' => (float) $invoice['amount_paid'],
+            'allowPartialPayment' => (bool) $invoice['allow_partial_payment'],
             'status' => $invoice['status'],
             'dueDate' => $invoice['due_date'],
         ], $rows);

@@ -15,7 +15,7 @@ final class PaymentController extends Controller
         $actor = $this->requireActor($actor, 'STUDENT');
         $invoiceId = $this->idFromPublicId($request->body['invoice_id'] ?? null, 'inv');
         $invoice = $this->one(
-            'SELECT i.*, s.email, s.registration_number FROM invoices i JOIN students s ON s.id = i.student_id WHERE i.id = ? AND i.student_id = ? FOR UPDATE',
+            'SELECT i.*, s.email, s.registration_number, p.allow_partial_payment FROM invoices i JOIN students s ON s.id = i.student_id JOIN payment_types p ON p.id = i.payment_type_id WHERE i.id = ? AND i.student_id = ? FOR UPDATE',
             [$invoiceId, $actor['id']]
         );
         if (!$invoice) {
@@ -57,7 +57,10 @@ final class PaymentController extends Controller
         if ($requestedCents > $remainingCents) {
             throw new HttpException('Payment amount cannot exceed the outstanding balance.', 422);
         }
-        if ($paidCents === 0) {
+        if (!(bool) $invoice['allow_partial_payment'] && $requestedCents !== $remainingCents) {
+            throw new HttpException('This fee requires full payment. Part payments are not enabled.', 422);
+        }
+        if ((bool) $invoice['allow_partial_payment'] && $paidCents === 0) {
             $minimumFirstPaymentCents = intdiv(($totalCents * 60) + 99, 100);
             if ($requestedCents < $minimumFirstPaymentCents) {
                 throw new HttpException(
