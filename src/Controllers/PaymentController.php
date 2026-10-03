@@ -81,8 +81,8 @@ final class PaymentController extends Controller
             'reference' => $reference,
             'callback_url' => (string) ($request->body['callback_url'] ?? ''),
             'metadata' => [
-                'invoice_id' => (int) $invoice['id'],
-                'student_id' => (int) $actor['id'],
+                'invoice_id' => $invoice['id'],
+                'student_id' => $actor['id'],
                 'registration_number' => $invoice['registration_number'],
             ],
         ]);
@@ -93,8 +93,9 @@ final class PaymentController extends Controller
         }
 
         $this->run(
-            "INSERT INTO transactions (invoice_id, student_id, transaction_reference, paystack_reference, amount, currency, gateway, status, gateway_response) VALUES (?, ?, ?, ?, ?, ?, 'PAYSTACK', 'PENDING', ?)",
+            "INSERT INTO transactions (id, invoice_id, student_id, transaction_reference, paystack_reference, amount, currency, gateway, status, gateway_response) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYSTACK', 'PENDING', ?)",
             [
+                $this->newId(),
                 $invoice['id'],
                 $actor['id'],
                 $reference,
@@ -124,7 +125,7 @@ final class PaymentController extends Controller
         if (!$transaction) {
             throw new HttpException('Transaction reference not found.', 404);
         }
-        if ($actor['type'] === 'STUDENT' && (int) $transaction['student_id'] !== (int) $actor['id']) {
+        if ($actor['type'] === 'STUDENT' && $transaction['student_id'] !== $actor['id']) {
             throw new HttpException('Forbidden.', 403);
         }
 
@@ -196,10 +197,10 @@ final class PaymentController extends Controller
 
                 $existingReceipt = $this->one('SELECT id FROM receipts WHERE transaction_id = ?', [$transaction['id']]);
                 if (!$existingReceipt) {
-                    $receiptNumber = 'RCT-' . gmdate('Y') . '-' . str_pad((string) $transaction['id'], 8, '0', STR_PAD_LEFT);
+                    $receiptNumber = 'RCT-' . gmdate('Y') . '-' . strtoupper(substr(str_replace('-', '', $this->newId()), 0, 16));
                     $this->run(
-                        'INSERT INTO receipts (transaction_id, receipt_number, verification_code, issued_at) VALUES (?, ?, ?, UTC_TIMESTAMP())',
-                        [$transaction['id'], $receiptNumber, bin2hex(random_bytes(32))]
+                        'INSERT INTO receipts (id, transaction_id, receipt_number, verification_code, issued_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP())',
+                        [$this->newId(), $transaction['id'], $receiptNumber, bin2hex(random_bytes(32))]
                     );
                 }
                 $this->audit(['type' => 'SYSTEM', 'name' => 'Paystack'], 'Verified successful payment', 'Transaction', $transaction['transaction_reference']);
@@ -248,7 +249,7 @@ final class PaymentController extends Controller
         return $decoded;
     }
 
-    private function transactionPayload(int $id): array
+    private function transactionPayload(string $id): array
     {
         $row = $this->one(
             'SELECT t.*, s.registration_number, s.first_name, s.other_names, s.surname, s.email, p.name AS payment_type_name, a.name AS session_name, r.receipt_number FROM transactions t JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id LEFT JOIN receipts r ON r.transaction_id = t.id WHERE t.id = ?',

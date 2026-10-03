@@ -34,27 +34,38 @@ abstract class Controller
         return $statement->rowCount();
     }
 
-    protected function idFromPublicId(string|int|null $value, string $prefix): int
+    protected function idFromPublicId(string|int|null $value, string $prefix): string
     {
         $value = (string) $value;
-        if (ctype_digit($value)) {
-            return (int) $value;
+        if (preg_match('/^' . preg_quote($prefix, '/') . '_([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i', $value, $matches)) {
+            return strtolower($matches[1]);
         }
-
-        if (preg_match('/^' . preg_quote($prefix, '/') . '_(\d+)$/', $value, $matches)) {
-            return (int) $matches[1];
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value)) {
+            return strtolower($value);
         }
 
         throw new HttpException('Invalid resource ID.', 422);
     }
 
+    protected function newId(): string
+    {
+        $bytes = random_bytes(16);
+        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+        $hex = bin2hex($bytes);
+
+        return substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-' . substr($hex, 12, 4)
+            . '-' . substr($hex, 16, 4) . '-' . substr($hex, 20);
+    }
+
     protected function audit(?array $actor, string $action, string $entity, ?string $reference = null, array $metadata = []): void
     {
         $actorType = $actor['type'] ?? 'SYSTEM';
-        $adminId = $actorType === 'ADMIN' ? (int) $actor['id'] : null;
+        $adminId = $actorType === 'ADMIN' ? $actor['id'] : null;
         $this->run(
-            'INSERT INTO audit_logs (administrator_id, actor_type, actor_id, actor_name, actor_role, action, entity_type, entity_reference, ip_address, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO audit_logs (id, administrator_id, actor_type, actor_id, actor_name, actor_role, action, entity_type, entity_reference, ip_address, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
+                $this->newId(),
                 $adminId ?: null,
                 $actorType,
                 isset($actor['id']) ? (string) $actor['id'] : null,

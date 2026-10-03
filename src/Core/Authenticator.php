@@ -31,7 +31,7 @@ final class Authenticator
         $table = $tokenRow['actor_type'] === 'STUDENT' ? 'students' : 'administrators';
         $statusColumn = $tokenRow['actor_type'] === 'STUDENT' ? 'account_status' : 'status';
         $statement = $db->prepare("SELECT * FROM {$table} WHERE id = ? AND {$statusColumn} = 'ACTIVE'");
-        $statement->execute([(int) $tokenRow['actor_id']]);
+        $statement->execute([$tokenRow['actor_id']]);
         $record = $statement->fetch();
         if (!$record) {
             throw new HttpException('Account is inactive.', 403);
@@ -42,7 +42,7 @@ final class Authenticator
 
         $actor = [
             'type' => $tokenRow['actor_type'],
-            'id' => (int) $record['id'],
+            'id' => $record['id'],
             'role' => $tokenRow['actor_type'] === 'STUDENT' ? 'STUDENT' : $record['role'],
             'name' => $tokenRow['actor_type'] === 'STUDENT'
                 ? trim($record['first_name'] . ' ' . $record['other_names'] . ' ' . $record['surname'])

@@ -5,7 +5,7 @@ CREATE DATABASE IF NOT EXISTS obong_payment
 USE obong_payment;
 
 CREATE TABLE academic_sessions (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id CHAR(36) NOT NULL,
   name VARCHAR(20) NOT NULL,
   starts_on DATE NOT NULL,
   ends_on DATE NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE academic_sessions (
 ) ENGINE=InnoDB;
 
 CREATE TABLE faculties (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id CHAR(36) NOT NULL,
   name VARCHAR(160) NOT NULL,
   code VARCHAR(32) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -28,8 +28,8 @@ CREATE TABLE faculties (
 ) ENGINE=InnoDB;
 
 CREATE TABLE departments (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  faculty_id BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) NOT NULL,
+  faculty_id CHAR(36) NOT NULL,
   name VARCHAR(160) NOT NULL,
   code VARCHAR(32) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -41,8 +41,8 @@ CREATE TABLE departments (
 ) ENGINE=InnoDB;
 
 CREATE TABLE programmes (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  department_id BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) NOT NULL,
+  department_id CHAR(36) NOT NULL,
   name VARCHAR(180) NOT NULL,
   code VARCHAR(32) NOT NULL,
   study_mode ENUM('FULL_TIME', 'PART_TIME') NOT NULL DEFAULT 'FULL_TIME',
@@ -56,9 +56,9 @@ CREATE TABLE programmes (
 ) ENGINE=InnoDB;
 
 CREATE TABLE students (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  academic_session_id BIGINT UNSIGNED NOT NULL,
-  programme_id BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) NOT NULL,
+  academic_session_id CHAR(36) NOT NULL,
+  programme_id CHAR(36) NOT NULL,
   registration_number VARCHAR(40) NOT NULL,
   surname VARCHAR(100) NOT NULL,
   first_name VARCHAR(100) NOT NULL,
@@ -81,7 +81,7 @@ CREATE TABLE students (
 ) ENGINE=InnoDB;
 
 CREATE TABLE administrators (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id CHAR(36) NOT NULL,
   name VARCHAR(180) NOT NULL,
   email VARCHAR(190) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
@@ -97,21 +97,21 @@ CREATE TABLE administrators (
 ) ENGINE=InnoDB;
 
 CREATE TABLE payment_types (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  academic_session_id BIGINT UNSIGNED NOT NULL,
-  faculty_id BIGINT UNSIGNED NULL,
-  department_id BIGINT UNSIGNED NULL,
+  id CHAR(36) NOT NULL,
+  academic_session_id CHAR(36) NOT NULL,
+  faculty_id CHAR(36) NULL,
+  department_id CHAR(36) NULL,
   name VARCHAR(140) NOT NULL,
   code VARCHAR(48) NOT NULL,
   amount DECIMAL(12, 2) NOT NULL,
   applicable_level VARCHAR(24) NOT NULL DEFAULT 'ALL',
-  faculty_scope_id BIGINT UNSIGNED GENERATED ALWAYS AS (COALESCE(faculty_id, 0)) STORED,
-  department_scope_id BIGINT UNSIGNED GENERATED ALWAYS AS (COALESCE(department_id, 0)) STORED,
+  faculty_scope_id CHAR(36) GENERATED ALWAYS AS (COALESCE(faculty_id, '00000000-0000-0000-0000-000000000000')) STORED,
+  department_scope_id CHAR(36) GENERATED ALWAYS AS (COALESCE(department_id, '00000000-0000-0000-0000-000000000000')) STORED,
   is_mandatory BOOLEAN NOT NULL DEFAULT TRUE,
   allow_partial_payment BOOLEAN NOT NULL DEFAULT FALSE,
   status ENUM('ACTIVE', 'INACTIVE') NOT NULL DEFAULT 'ACTIVE',
   description TEXT NULL,
-  created_by BIGINT UNSIGNED NULL,
+  created_by CHAR(36) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -130,11 +130,29 @@ CREATE TABLE payment_types (
   CONSTRAINT chk_payment_types_amount CHECK (amount >= 0)
 ) ENGINE=InnoDB;
 
+CREATE TABLE payment_type_fee_schedules (
+  id CHAR(36) NOT NULL,
+  payment_type_id CHAR(36) NOT NULL,
+  department_id CHAR(36) NOT NULL,
+  applicable_level VARCHAR(24) NOT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payment_type_department_level (payment_type_id, department_id, applicable_level),
+  KEY idx_payment_type_fee_schedules_department (department_id, applicable_level),
+  CONSTRAINT fk_payment_type_fee_schedules_payment_type FOREIGN KEY (payment_type_id)
+    REFERENCES payment_types (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT fk_payment_type_fee_schedules_department FOREIGN KEY (department_id)
+    REFERENCES departments (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT chk_payment_type_fee_schedules_amount CHECK (amount > 0)
+) ENGINE=InnoDB;
+
 CREATE TABLE invoices (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  student_id BIGINT UNSIGNED NOT NULL,
-  payment_type_id BIGINT UNSIGNED NOT NULL,
-  academic_session_id BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) NOT NULL,
+  student_id CHAR(36) NOT NULL,
+  payment_type_id CHAR(36) NOT NULL,
+  academic_session_id CHAR(36) NOT NULL,
   amount DECIMAL(12, 2) NOT NULL,
   amount_paid DECIMAL(12, 2) NOT NULL DEFAULT 0,
   status ENUM('UNPAID', 'PARTIAL', 'PAID', 'VOID', 'OVERDUE') NOT NULL DEFAULT 'UNPAID',
@@ -155,9 +173,9 @@ CREATE TABLE invoices (
 ) ENGINE=InnoDB;
 
 CREATE TABLE transactions (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  invoice_id BIGINT UNSIGNED NOT NULL,
-  student_id BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) NOT NULL,
+  invoice_id CHAR(36) NOT NULL,
+  student_id CHAR(36) NOT NULL,
   transaction_reference VARCHAR(100) NOT NULL,
   paystack_reference VARCHAR(100) NULL,
   amount DECIMAL(12, 2) NOT NULL,
@@ -183,8 +201,8 @@ CREATE TABLE transactions (
 ) ENGINE=InnoDB;
 
 CREATE TABLE receipts (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  transaction_id BIGINT UNSIGNED NOT NULL,
+  id CHAR(36) NOT NULL,
+  transaction_id CHAR(36) NOT NULL,
   receipt_number VARCHAR(64) NOT NULL,
   verification_code CHAR(64) NOT NULL,
   issued_at DATETIME NOT NULL,
@@ -198,8 +216,8 @@ CREATE TABLE receipts (
 ) ENGINE=InnoDB;
 
 CREATE TABLE audit_logs (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  administrator_id BIGINT UNSIGNED NULL,
+  id CHAR(36) NOT NULL,
+  administrator_id CHAR(36) NULL,
   actor_type ENUM('ADMIN', 'STUDENT', 'SYSTEM') NOT NULL,
   actor_id VARCHAR(64) NULL,
   actor_name VARCHAR(180) NOT NULL,
@@ -221,7 +239,7 @@ CREATE TABLE audit_logs (
 CREATE TABLE app_settings (
   setting_key VARCHAR(100) NOT NULL,
   setting_value JSON NOT NULL,
-  updated_by BIGINT UNSIGNED NULL,
+  updated_by CHAR(36) NULL,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (setting_key),
   CONSTRAINT fk_app_settings_updater FOREIGN KEY (updated_by)
@@ -229,9 +247,9 @@ CREATE TABLE app_settings (
 ) ENGINE=InnoDB;
 
 CREATE TABLE password_reset_tokens (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id CHAR(36) NOT NULL,
   identity_type ENUM('STUDENT', 'ADMIN') NOT NULL,
-  identity_id BIGINT UNSIGNED NOT NULL,
+  identity_id CHAR(36) NOT NULL,
   token_hash CHAR(64) NOT NULL,
   expires_at DATETIME NOT NULL,
   used_at DATETIME NULL,
@@ -243,9 +261,9 @@ CREATE TABLE password_reset_tokens (
 ) ENGINE=InnoDB;
 
 CREATE TABLE api_tokens (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id CHAR(36) NOT NULL,
   actor_type ENUM('STUDENT', 'ADMIN') NOT NULL,
-  actor_id BIGINT UNSIGNED NOT NULL,
+  actor_id CHAR(36) NOT NULL,
   token_hash CHAR(64) NOT NULL,
   expires_at DATETIME NOT NULL,
   last_used_at DATETIME NULL,

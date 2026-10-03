@@ -14,7 +14,7 @@ final class ReceiptController extends Controller
     {
         $actor = $this->requireActor($actor);
         $receipt = $this->find($params['receiptOrReference']);
-        if (!$receipt || ($actor['type'] === 'STUDENT' && (int) $receipt['student_id'] !== (int) $actor['id'])) {
+        if (!$receipt || ($actor['type'] === 'STUDENT' && $receipt['student_id'] !== $actor['id'])) {
             throw new HttpException('Official receipt not found.', 404);
         }
         return $this->receiptPayload($receipt);

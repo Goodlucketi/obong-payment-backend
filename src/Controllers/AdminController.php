@@ -102,6 +102,12 @@ final class AdminController extends Controller
         $body = $request->body;
         $programmeId = $body['programmeId'] ?? $body['programme_id'] ?? null;
         $sessionId = $body['academicSessionId'] ?? $body['academic_session_id'] ?? null;
+        if ($programmeId !== null) {
+            $programmeId = $this->normalizeUuid($programmeId);
+        }
+        if ($sessionId !== null) {
+            $sessionId = $this->normalizeUuid($sessionId);
+        }
         foreach (['regNumber', 'firstName', 'surname', 'email', 'level'] as $field) {
             if (trim((string) ($body[$field] ?? '')) === '') {
                 throw new HttpException("{$field} is required.", 422);
@@ -111,17 +117,21 @@ final class AdminController extends Controller
             throw new HttpException('A valid programme and email are required.', 422);
         }
         $session = $sessionId
-            ? $this->one('SELECT * FROM academic_sessions WHERE id = ?', [(int) $sessionId])
+            ? $this->one('SELECT * FROM academic_sessions WHERE id = ?', [$sessionId])
             : $this->one("SELECT * FROM academic_sessions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT 1");
-        $programme = $this->one('SELECT id FROM programmes WHERE id = ?', [(int) $programmeId]);
+        $programme = $this->one('SELECT id FROM programmes WHERE id = ?', [$programmeId]);
         if (!$session || !$programme) {
             throw new HttpException('Academic session or programme not found.', 422);
         }
+        if ($programmeId === false || $sessionId === false) {
+            throw new HttpException('A valid programme and academic session are required.', 422);
+        }
+        $studentId = $this->newId();
         $this->run(
-            'INSERT INTO students (academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [$session['id'], $programme['id'], trim($body['regNumber']), trim($body['surname']), trim($body['firstName']), trim((string) ($body['otherNames'] ?? '')) ?: null, strtolower(trim($body['email'])), trim((string) ($body['phone'] ?? '')) ?: null, trim($body['level']), password_hash((string) ($body['password'] ?? bin2hex(random_bytes(12))), PASSWORD_DEFAULT)]
+            'INSERT INTO students (id, academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [$studentId, $session['id'], $programme['id'], trim($body['regNumber']), trim($body['surname']), trim($body['firstName']), trim((string) ($body['otherNames'] ?? '')) ?: null, strtolower(trim($body['email'])), trim((string) ($body['phone'] ?? '')) ?: null, trim($body['level']), password_hash((string) ($body['password'] ?? bin2hex(random_bytes(12))), PASSWORD_DEFAULT)]
         );
-        $student = $this->findStudent((string) $this->db->lastInsertId());
+        $student = $this->findStudent($studentId);
         $this->audit($actor, 'Created student account', 'Student', $student['registration_number']);
         return $this->studentPayload($student);
     }
@@ -152,8 +162,8 @@ final class AdminController extends Controller
         if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($password) < 8 || !in_array($role, ['SUPER_ADMIN', 'BURSAR', 'REGISTRAR'], true)) {
             throw new HttpException('Name, valid email, role, and password of at least 8 characters are required.', 422);
         }
-        $this->run('INSERT INTO administrators (name, email, password_hash, role, department) VALUES (?, ?, ?, ?, ?)', [$name, $email, password_hash($password, PASSWORD_DEFAULT), $role, trim((string) ($body['department'] ?? '')) ?: null]);
-        $id = (int) $this->db->lastInsertId();
+        $id = $this->newId();
+        $this->run('INSERT INTO administrators (id, name, email, password_hash, role, department) VALUES (?, ?, ?, ?, ?, ?)', [$id, $name, $email, password_hash($password, PASSWORD_DEFAULT), $role, trim((string) ($body['department'] ?? '')) ?: null]);
         $this->audit($actor, 'Created administrator', 'Administrator', $email);
         return ['id' => 'adm_' . $id, 'name' => $name, 'email' => $email, 'role' => $role, 'department' => $body['department'] ?? null, 'status' => 'ACTIVE', 'lastLogin' => null, 'createdAt' => gmdate('Y-m-d')];
     }
@@ -216,8 +226,8 @@ final class AdminController extends Controller
             if ($status === 'ACTIVE') {
                 $this->run("UPDATE academic_sessions SET status = 'CLOSED'");
             }
-            $this->run('INSERT INTO academic_sessions (name, starts_on, ends_on, status) VALUES (?, ?, ?, ?)', [$name, $start, $end, $status]);
-            $id = (int) $this->db->lastInsertId();
+            $id = $this->newId();
+            $this->run('INSERT INTO academic_sessions (id, name, starts_on, ends_on, status) VALUES (?, ?, ?, ?, ?)', [$id, $name, $start, $end, $status]);
             $this->db->commit();
         } catch (\Throwable $exception) {
             $this->db->rollBack();
@@ -320,11 +330,26 @@ final class AdminController extends Controller
     {
         $this->requireActor($actor);
         $rows = $this->all('SELECT p.*, s.name AS session_name, f.name AS faculty_name, d.name AS department_name, (SELECT COUNT(*) FROM invoices i WHERE i.payment_type_id = p.id) AS invoice_count FROM payment_types p JOIN academic_sessions s ON s.id = p.academic_session_id LEFT JOIN faculties f ON f.id = p.faculty_id LEFT JOIN departments d ON d.id = p.department_id ORDER BY s.starts_on DESC, p.name');
-        return array_map(static fn (array $type): array => [
+        $types = [];
+        foreach ($rows as $type) {
+            $schedules = $this->all(
+                'SELECT fs.department_id, fs.applicable_level, fs.amount, d.name AS department_name, f.name AS faculty_name FROM payment_type_fee_schedules fs JOIN departments d ON d.id = fs.department_id JOIN faculties f ON f.id = d.faculty_id WHERE fs.payment_type_id = ? ORDER BY f.name, d.name, fs.applicable_level',
+                [$type['id']]
+            );
+            $typeSchedules = array_map(static fn (array $schedule): array => [
+                'departmentId' => (string) $schedule['department_id'],
+                'faculty' => $schedule['faculty_name'],
+                'department' => $schedule['department_name'],
+                'level' => $schedule['applicable_level'],
+                'amount' => (float) $schedule['amount'],
+            ], $schedules);
+            $amounts = array_column($typeSchedules, 'amount');
+            $types[] = [
             'id' => 'pt_' . $type['id'],
             'name' => $type['name'],
             'code' => $type['code'],
-            'amount' => (float) $type['amount'],
+            'amount' => $amounts ? min($amounts) : (float) $type['amount'],
+            'amountRange' => $amounts ? ['min' => min($amounts), 'max' => max($amounts)] : null,
             'session' => $type['session_name'],
             'facultyId' => $type['faculty_id'] === null ? null : (string) $type['faculty_id'],
             'faculty' => $type['faculty_name'] ?? 'All Faculties',
@@ -336,7 +361,10 @@ final class AdminController extends Controller
             'allowPartialPayment' => (bool) $type['allow_partial_payment'],
             'status' => $type['status'],
             'description' => $type['description'],
-        ], $rows);
+            'schedules' => $typeSchedules,
+            ];
+        }
+        return $types;
     }
 
     public function faculties(Request $request, array $params, ?array $actor): array
@@ -350,13 +378,14 @@ final class AdminController extends Controller
         $actor = $this->requireActor($actor, 'ADMIN');
         $body = $request->body;
         $name = trim((string) ($body['name'] ?? ''));
-        $amount = filter_var($body['amount'] ?? null, FILTER_VALIDATE_FLOAT);
+        $hasSchedules = array_key_exists('schedules', $body);
+        $amount = $hasSchedules ? 0.0 : filter_var($body['amount'] ?? null, FILTER_VALIDATE_FLOAT);
         $sessionName = trim((string) ($body['session'] ?? ''));
         $session = $sessionName !== ''
             ? $this->one('SELECT id, name FROM academic_sessions WHERE name = ?', [$sessionName])
             : $this->one("SELECT id, name FROM academic_sessions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT 1");
-        if ($name === '' || $amount === false || $amount <= 0 || !$session) {
-            throw new HttpException('Payment type name, positive amount, and valid academic session are required.', 422);
+        if ($name === '' || (!$hasSchedules && ($amount === false || $amount <= 0)) || !$session) {
+            throw new HttpException('Payment type name, valid fee amounts, and valid academic session are required.', 422);
         }
         $code = strtoupper(trim((string) ($body['code'] ?? preg_replace('/[^A-Z0-9]+/', '_', strtoupper($name)))));
         $applicableLevel = trim((string) ($body['applicableLevel'] ?? 'All Levels'));
@@ -366,17 +395,29 @@ final class AdminController extends Controller
 
         $this->db->beginTransaction();
         try {
-            [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body);
-            $this->assertPaymentTypeScopeAvailable((int) $session['id'], $code, $facultyId, $departmentId, $applicableLevel);
+            if ($hasSchedules) {
+                $facultyId = null;
+                $departmentId = null;
+                $applicableLevel = 'ALL';
+            } else {
+                [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body);
+            }
+            $this->assertPaymentTypeScopeAvailable($session['id'], $code, $facultyId, $departmentId, $applicableLevel);
+            $paymentTypeId = $this->newId();
             $this->run(
-                'INSERT INTO payment_types (academic_session_id, faculty_id, department_id, name, code, amount, applicable_level, is_mandatory, allow_partial_payment, status, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $applicableLevel, $isMandatory, $allowPartialPayment, $status, trim((string) ($body['description'] ?? '')) ?: null, $actor['id']]
+                'INSERT INTO payment_types (id, academic_session_id, faculty_id, department_id, name, code, amount, applicable_level, is_mandatory, allow_partial_payment, status, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$paymentTypeId, $session['id'], $facultyId, $departmentId, $name, $code, $amount, $applicableLevel, $isMandatory, $allowPartialPayment, $status, trim((string) ($body['description'] ?? '')) ?: null, $actor['id']]
             );
-            $paymentTypeId = (int) $this->db->lastInsertId();
 
-            if ($status === 'ACTIVE' && $isMandatory) {
+            if ($hasSchedules) {
+                $this->replacePaymentTypeFeeSchedules($paymentTypeId, $body['schedules']);
+            }
+
+            if ($hasSchedules && $status === 'ACTIVE' && $isMandatory) {
+                $this->issueScheduledInvoices($paymentTypeId, $session['id']);
+            } elseif ($status === 'ACTIVE' && $isMandatory) {
                 $this->run(
-                    "INSERT IGNORE INTO invoices (student_id, payment_type_id, academic_session_id, amount, status) SELECT s.id, ?, ?, ?, 'UNPAID' FROM students s JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id WHERE s.academic_session_id = ? AND (? IS NULL OR d.faculty_id = ?) AND (? IS NULL OR d.id = ?) AND (? IN ('ALL', 'All Levels') OR s.level = ?)",
+                    "INSERT IGNORE INTO invoices (id, student_id, payment_type_id, academic_session_id, amount, status) SELECT UUID(), s.id, ?, ?, ?, 'UNPAID' FROM students s JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id WHERE s.academic_session_id = ? AND (? IS NULL OR d.faculty_id = ?) AND (? IS NULL OR d.id = ?) AND (? IN ('ALL', 'All Levels') OR s.level = ?)",
                     [$paymentTypeId, $session['id'], $amount, $session['id'], $facultyId, $facultyId, $departmentId, $departmentId, $applicableLevel, $applicableLevel]
                 );
             }
@@ -390,7 +431,7 @@ final class AdminController extends Controller
         $this->audit($actor, 'Created payment type', 'Payment Type', $code);
         $faculty = $facultyId === null ? null : $this->one('SELECT name FROM faculties WHERE id = ?', [$facultyId]);
         $department = $departmentId === null ? null : $this->one('SELECT name FROM departments WHERE id = ?', [$departmentId]);
-        return ['id' => 'pt_' . $paymentTypeId, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $applicableLevel, 'isMandatory' => $isMandatory, 'allowPartialPayment' => $allowPartialPayment, 'status' => $status, 'description' => $body['description'] ?? ''];
+        return ['id' => 'pt_' . $paymentTypeId, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $applicableLevel, 'isMandatory' => $isMandatory, 'allowPartialPayment' => $allowPartialPayment, 'status' => $status, 'description' => $body['description'] ?? '', 'schedules' => $hasSchedules ? $this->paymentTypeSchedules($paymentTypeId) : []];
     }
 
     public function updatePaymentType(Request $request, array $params, ?array $actor): array
@@ -402,7 +443,10 @@ final class AdminController extends Controller
             throw new HttpException('Payment type not found.', 404);
         }
         $body = $request->body;
-        $amount = isset($body['amount']) ? filter_var($body['amount'], FILTER_VALIDATE_FLOAT) : (float) $current['amount'];
+        $hasSchedules = array_key_exists('schedules', $body);
+        $amount = $hasSchedules
+            ? 0.0
+            : (isset($body['amount']) ? filter_var($body['amount'], FILTER_VALIDATE_FLOAT) : (float) $current['amount']);
         if ($amount === false || $amount < 0) {
             throw new HttpException('Payment amount must be zero or greater.', 422);
         }
@@ -424,9 +468,21 @@ final class AdminController extends Controller
         $description = $body['description'] ?? $current['description'];
         $this->db->beginTransaction();
         try {
-            [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body, $current);
-            $this->assertPaymentTypeScopeAvailable((int) $session['id'], $code, $facultyId, $departmentId, $level, $id);
+            if ($hasSchedules) {
+                $facultyId = null;
+                $departmentId = null;
+                $level = 'ALL';
+            } else {
+                [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body, $current);
+            }
+            $this->assertPaymentTypeScopeAvailable($session['id'], $code, $facultyId, $departmentId, $level, $id);
             $this->run('UPDATE payment_types SET academic_session_id = ?, faculty_id = ?, department_id = ?, name = ?, code = ?, amount = ?, applicable_level = ?, is_mandatory = ?, allow_partial_payment = ?, status = ?, description = ? WHERE id = ?', [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $level, $mandatory, $allowPartialPayment, $status, $description, $id]);
+            if ($hasSchedules) {
+                $this->replacePaymentTypeFeeSchedules($id, $body['schedules']);
+            }
+            if ($hasSchedules && $status === 'ACTIVE' && $mandatory) {
+                $this->issueScheduledInvoices($id, $session['id']);
+            }
             $this->db->commit();
         } catch (\Throwable $exception) {
             if ($this->db->inTransaction()) {
@@ -437,7 +493,69 @@ final class AdminController extends Controller
         $this->audit($actor, 'Updated payment type', 'Payment Type', $code, ['previousCode' => $current['code']]);
         $faculty = $facultyId === null ? null : $this->one('SELECT name FROM faculties WHERE id = ?', [$facultyId]);
         $department = $departmentId === null ? null : $this->one('SELECT name FROM departments WHERE id = ?', [$departmentId]);
-        return ['id' => 'pt_' . $id, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $level, 'isMandatory' => (bool) $mandatory, 'allowPartialPayment' => (bool) $allowPartialPayment, 'status' => $status, 'description' => $description];
+        return ['id' => 'pt_' . $id, 'name' => $name, 'code' => $code, 'amount' => (float) $amount, 'session' => $session['name'], 'facultyId' => $facultyId === null ? null : (string) $facultyId, 'faculty' => $faculty['name'] ?? 'All Faculties', 'departmentId' => $departmentId === null ? null : (string) $departmentId, 'department' => $department['name'] ?? 'All Departments', 'applicableLevel' => $level, 'isMandatory' => (bool) $mandatory, 'allowPartialPayment' => (bool) $allowPartialPayment, 'status' => $status, 'description' => $description, 'schedules' => $hasSchedules ? $this->paymentTypeSchedules($id) : []];
+    }
+
+    private function replacePaymentTypeFeeSchedules(string $paymentTypeId, mixed $scheduleInput): void
+    {
+        if (!is_array($scheduleInput) || $scheduleInput === []) {
+            throw new HttpException('Add at least one department and level fee amount.', 422);
+        }
+
+        $validated = [];
+        $seen = [];
+        $validLevels = ['100', '200', '300', '400', '500', 'Postgraduate'];
+        foreach ($scheduleInput as $schedule) {
+            if (!is_array($schedule)) {
+                throw new HttpException('Each fee schedule must include faculty, department, level, and amount.', 422);
+            }
+            $facultyName = trim((string) ($schedule['faculty'] ?? $schedule['facultyName'] ?? ''));
+            $departmentName = trim((string) ($schedule['department'] ?? $schedule['departmentName'] ?? ''));
+            $level = trim((string) ($schedule['level'] ?? ''));
+            $amount = filter_var($schedule['amount'] ?? null, FILTER_VALIDATE_FLOAT);
+            if ($facultyName === '' || $departmentName === '' || !in_array($level, $validLevels, true) || $amount === false || $amount <= 0) {
+                throw new HttpException('Each fee schedule requires a valid faculty, department, level, and positive amount.', 422);
+            }
+
+            $facultyId = $this->findOrCreateFaculty($facultyName)['id'];
+            $department = $this->findOrCreateDepartment($facultyId, $departmentName);
+            $key = $department['id'] . ':' . $level;
+            if (isset($seen[$key])) {
+                throw new HttpException('A department and level can only have one amount in a fee schedule.', 422);
+            }
+            $seen[$key] = true;
+            $validated[] = [$department['id'], $level, $amount];
+        }
+
+        $this->run('DELETE FROM payment_type_fee_schedules WHERE payment_type_id = ?', [$paymentTypeId]);
+        foreach ($validated as [$departmentId, $level, $amount]) {
+            $this->run(
+                'INSERT INTO payment_type_fee_schedules (id, payment_type_id, department_id, applicable_level, amount) VALUES (?, ?, ?, ?, ?)',
+                [$this->newId(), $paymentTypeId, $departmentId, $level, $amount]
+            );
+        }
+    }
+
+    private function paymentTypeSchedules(string $paymentTypeId): array
+    {
+        return array_map(static fn (array $schedule): array => [
+            'departmentId' => (string) $schedule['department_id'],
+            'faculty' => $schedule['faculty_name'],
+            'department' => $schedule['department_name'],
+            'level' => $schedule['applicable_level'],
+            'amount' => (float) $schedule['amount'],
+        ], $this->all(
+            'SELECT fs.department_id, fs.applicable_level, fs.amount, d.name AS department_name, f.name AS faculty_name FROM payment_type_fee_schedules fs JOIN departments d ON d.id = fs.department_id JOIN faculties f ON f.id = d.faculty_id WHERE fs.payment_type_id = ? ORDER BY f.name, d.name, fs.applicable_level',
+            [$paymentTypeId]
+        ));
+    }
+
+    private function issueScheduledInvoices(string $paymentTypeId, string $sessionId): void
+    {
+        $this->run(
+            "INSERT IGNORE INTO invoices (id, student_id, payment_type_id, academic_session_id, amount, status) SELECT UUID(), s.id, ?, s.academic_session_id, fs.amount, 'UNPAID' FROM students s JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id JOIN payment_type_fee_schedules fs ON fs.department_id = d.id AND fs.applicable_level = s.level WHERE s.academic_session_id = ? AND fs.payment_type_id = ?",
+            [$paymentTypeId, $sessionId, $paymentTypeId]
+        );
     }
 
     public function deletePaymentType(Request $request, array $params, ?array $actor): array
@@ -480,17 +598,17 @@ final class AdminController extends Controller
             $facultyName = trim((string) ($body['facultyName'] ?? ''));
             $facultyId = $facultyName === '' || strtoupper($facultyName) === 'ALL'
                 ? null
-                : (int) $this->findOrCreateFaculty($facultyName)['id'];
+                : $this->findOrCreateFaculty($facultyName)['id'];
         } elseif (array_key_exists('facultyId', $body)) {
             $rawFacultyId = $body['facultyId'];
             $facultyId = $rawFacultyId === null || $rawFacultyId === '' || $rawFacultyId === 'ALL'
                 ? null
-                : filter_var($rawFacultyId, FILTER_VALIDATE_INT);
+                : $this->normalizeUuid($rawFacultyId);
             if ($facultyId === false || ($facultyId !== null && !$this->one('SELECT id FROM faculties WHERE id = ?', [$facultyId]))) {
                 throw new HttpException('Select a valid faculty or All Faculties.', 422);
             }
         } else {
-            $facultyId = isset($current['faculty_id']) ? (int) $current['faculty_id'] : null;
+            $facultyId = $current['faculty_id'] ?? null;
         }
 
         if (array_key_exists('departmentName', $body)) {
@@ -501,23 +619,23 @@ final class AdminController extends Controller
                 if ($facultyId === null) {
                     throw new HttpException('Select a faculty before assigning a department-specific fee.', 422);
                 }
-                $departmentId = (int) $this->findOrCreateDepartment($facultyId, $departmentName)['id'];
+                $departmentId = $this->findOrCreateDepartment($facultyId, $departmentName)['id'];
             }
         } elseif (array_key_exists('departmentId', $body)) {
             $rawDepartmentId = $body['departmentId'];
             $departmentId = $rawDepartmentId === null || $rawDepartmentId === '' || $rawDepartmentId === 'ALL'
                 ? null
-                : filter_var($rawDepartmentId, FILTER_VALIDATE_INT);
+                : $this->normalizeUuid($rawDepartmentId);
             if ($departmentId === false) {
                 throw new HttpException('Select a valid department or All Departments.', 422);
             }
         } else {
-            $departmentId = isset($current['department_id']) ? (int) $current['department_id'] : null;
+            $departmentId = $current['department_id'] ?? null;
         }
 
         if ($departmentId !== null) {
             $department = $this->one('SELECT id, faculty_id FROM departments WHERE id = ?', [$departmentId]);
-            if (!$department || $facultyId === null || (int) $department['faculty_id'] !== $facultyId) {
+            if (!$department || $facultyId === null || $department['faculty_id'] !== $facultyId) {
                 throw new HttpException('The selected department must belong to the selected faculty.', 422);
             }
         }
@@ -526,12 +644,12 @@ final class AdminController extends Controller
     }
 
     private function assertPaymentTypeScopeAvailable(
-        int $sessionId,
+        string $sessionId,
         string $code,
-        ?int $facultyId,
-        ?int $departmentId,
+        ?string $facultyId,
+        ?string $departmentId,
         string $level,
-        ?int $excludeId = null
+        ?string $excludeId = null
     ): void {
         $overlap = $this->one(
             "SELECT id FROM payment_types WHERE academic_session_id = ? AND code = ? AND (? IS NULL OR id <> ?) AND (faculty_id IS NULL OR ? IS NULL OR faculty_id = ?) AND (department_id IS NULL OR ? IS NULL OR department_id = ?) AND (applicable_level IN ('ALL', 'All Levels') OR ? IN ('ALL', 'All Levels') OR applicable_level = ?) LIMIT 1",
@@ -554,15 +672,15 @@ final class AdminController extends Controller
 
         $code = $this->referenceCode('FAC', $name);
         $this->run(
-            'INSERT INTO faculties (name, code) VALUES (?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
-            [$name, $code]
+            'INSERT INTO faculties (id, name, code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE id = id',
+            [$this->newId(), $name, $code]
         );
 
         return $this->one('SELECT id, name FROM faculties WHERE name = ?', [$name])
             ?? throw new \RuntimeException('Unable to resolve the selected faculty.');
     }
 
-    private function findOrCreateDepartment(int $facultyId, string $name): array
+    private function findOrCreateDepartment(string $facultyId, string $name): array
     {
         $department = $this->one(
             'SELECT id, name, faculty_id FROM departments WHERE faculty_id = ? AND name = ?',
@@ -574,8 +692,8 @@ final class AdminController extends Controller
 
         $code = $this->referenceCode('DEP', $name, (string) $facultyId);
         $this->run(
-            'INSERT INTO departments (faculty_id, name, code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
-            [$facultyId, $name, $code]
+            'INSERT INTO departments (id, faculty_id, name, code) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = id',
+            [$this->newId(), $facultyId, $name, $code]
         );
 
         return $this->one(
@@ -593,16 +711,32 @@ final class AdminController extends Controller
         return $prefix . substr($slug !== '' ? $slug : 'ITEM', 0, $slugLength) . '-' . $suffix;
     }
 
+    private function normalizeUuid(mixed $value): string|false
+    {
+        $value = (string) $value;
+        if (preg_match('/^(?:fac|dep|prg|sess)_([0-9a-f-]{36})$/i', $value, $matches)) {
+            $value = $matches[1];
+        }
+
+        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value)
+            ? strtolower($value)
+            : false;
+    }
+
     public function verifyPayment(Request $request, array $params, ?array $actor): array
     {
         $this->requireActor($actor, 'ADMIN');
         $query = trim((string) ($request->body['query'] ?? ''));
+        $paymentTypeId = $this->idFromPublicId($request->body['paymentTypeId'] ?? null, 'pt');
         if ($query === '') {
-            throw new HttpException('Enter a registration number, transaction reference, or receipt number.', 422);
+            throw new HttpException('Select a fee and enter a registration number, transaction reference, or receipt number.', 422);
+        }
+        if (!$this->one('SELECT id FROM payment_types WHERE id = ?', [$paymentTypeId])) {
+            throw new HttpException('Selected payment type was not found.', 404);
         }
         $row = $this->one(
-            'SELECT t.id, t.transaction_reference, t.paystack_reference, t.amount, t.status, t.channel, t.created_at, s.id AS student_id, s.registration_number, s.first_name, s.other_names, s.surname, p.name AS payment_type_name, a.name AS session_name, r.receipt_number FROM transactions t JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id LEFT JOIN receipts r ON r.transaction_id = t.id WHERE LOWER(t.transaction_reference) = LOWER(?) OR LOWER(t.paystack_reference) = LOWER(?) OR LOWER(r.receipt_number) = LOWER(?) OR LOWER(s.registration_number) = LOWER(?) ORDER BY t.created_at DESC LIMIT 1',
-            [$query, $query, $query, $query]
+            'SELECT t.id, t.transaction_reference, t.paystack_reference, t.amount, t.status, t.channel, t.created_at, s.id AS student_id, s.registration_number, s.first_name, s.other_names, s.surname, p.name AS payment_type_name, a.name AS session_name, r.receipt_number FROM transactions t JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id LEFT JOIN receipts r ON r.transaction_id = t.id WHERE p.id = ? AND (LOWER(t.transaction_reference) = LOWER(?) OR LOWER(t.paystack_reference) = LOWER(?) OR LOWER(r.receipt_number) = LOWER(?) OR LOWER(s.registration_number) = LOWER(?)) ORDER BY t.created_at DESC LIMIT 1',
+            [$paymentTypeId, $query, $query, $query, $query]
         );
         if (!$row) {
             throw new HttpException('No payment record matches that query.', 404);
@@ -691,9 +825,9 @@ final class AdminController extends Controller
 
     private function findStudent(string $identifier): ?array
     {
-        $id = ctype_digit($identifier) ? (int) $identifier : (preg_match('/^std_(\d+)$/', $identifier, $matches) ? (int) $matches[1] : null);
         $sql = 'SELECT s.*, p.name AS programme_name, p.study_mode, d.name AS department_name, f.name AS faculty_name, a.name AS session_name FROM students s JOIN programmes p ON p.id = s.programme_id JOIN departments d ON d.id = p.department_id JOIN faculties f ON f.id = d.faculty_id JOIN academic_sessions a ON a.id = s.academic_session_id WHERE ';
-        return $id !== null
+        $id = preg_match('/^std_(.+)$/', $identifier, $matches) ? $matches[1] : $identifier;
+        return preg_match('/^[0-9a-f-]{36}$/i', $id)
             ? $this->one($sql . 's.id = ?', [$id])
             : $this->one($sql . 's.registration_number = ?', [$identifier]);
     }

@@ -55,7 +55,7 @@ final class TransactionController extends Controller
     {
         $actor = $this->requireActor($actor);
         $row = $this->find($params['reference']);
-        if (!$row || ($actor['type'] === 'STUDENT' && (int) $row['student_id'] !== (int) $actor['id'])) {
+        if (!$row || ($actor['type'] === 'STUDENT' && $row['student_id'] !== $actor['id'])) {
             throw new HttpException('Transaction not found.', 404);
         }
         return $this->payload($row);

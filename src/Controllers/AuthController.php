@@ -111,22 +111,24 @@ final class AuthController extends Controller
             $this->db->beginTransaction();
             if (!$programmeId) {
                 $faculty = $this->findOrCreateFaculty($facultyName);
-                $department = $this->findOrCreateDepartment((int) $faculty['id'], $departmentName);
+                $department = $this->findOrCreateDepartment($faculty['id'], $departmentName);
                 $programme = $this->findOrCreateProgramme($department, $studyMode);
                 $programmeId = $programme['id'];
             }
 
             $programme = $this->one(
                 'SELECT p.id, d.id AS department_id, d.faculty_id FROM programmes p JOIN departments d ON d.id = p.department_id WHERE p.id = ?',
-                [(int) $programmeId]
+                [$programmeId]
             );
             if (!$programme) {
                 throw new HttpException('The active academic session or selected programme is unavailable.', 422);
             }
 
+            $studentId = $this->newId();
             $this->run(
-                'INSERT INTO students (academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO students (id, academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 [
+                    $studentId,
                     $session['id'],
                     $programme['id'],
                     trim($body['regNumber']),
@@ -139,16 +141,14 @@ final class AuthController extends Controller
                     password_hash($body['password'], PASSWORD_DEFAULT),
                 ]
             );
-            $studentId = (int) $this->db->lastInsertId();
-
             $types = $this->all(
-                "SELECT id, amount FROM payment_types WHERE academic_session_id = ? AND status = 'ACTIVE' AND is_mandatory = 1 AND (faculty_id IS NULL OR faculty_id = ?) AND (department_id IS NULL OR department_id = ?) AND (applicable_level IN ('ALL', 'All Levels') OR applicable_level = ?)",
-                [$session['id'], $programme['faculty_id'], $programme['department_id'], trim($body['level'])]
+                "SELECT p.id, COALESCE(fs.amount, p.amount) AS amount FROM payment_types p LEFT JOIN payment_type_fee_schedules fs ON fs.payment_type_id = p.id AND fs.department_id = ? AND fs.applicable_level = ? WHERE p.academic_session_id = ? AND p.status = 'ACTIVE' AND p.is_mandatory = 1 AND (fs.id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM payment_type_fee_schedules any_fs WHERE any_fs.payment_type_id = p.id)) AND (p.faculty_id IS NULL OR p.faculty_id = ?) AND (p.department_id IS NULL OR p.department_id = ?) AND (p.applicable_level IN ('ALL', 'All Levels') OR p.applicable_level = ?)",
+                [$programme['department_id'], trim($body['level']), $session['id'], $programme['faculty_id'], $programme['department_id'], trim($body['level'])]
             );
             foreach ($types as $type) {
                 $this->run(
-                    "INSERT INTO invoices (student_id, payment_type_id, academic_session_id, amount, status) VALUES (?, ?, ?, ?, 'UNPAID')",
-                    [$studentId, $type['id'], $session['id'], $type['amount']]
+                    "INSERT INTO invoices (id, student_id, payment_type_id, academic_session_id, amount, status) VALUES (?, ?, ?, ?, ?, 'UNPAID')",
+                    [$this->newId(), $studentId, $type['id'], $session['id'], $type['amount']]
                 );
             }
             $this->db->commit();
@@ -186,15 +186,15 @@ final class AuthController extends Controller
 
         $code = $this->referenceCode('FAC', $name);
         $this->run(
-            'INSERT INTO faculties (name, code) VALUES (?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
-            [$name, $code]
+            'INSERT INTO faculties (id, name, code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE id = id',
+            [$this->newId(), $name, $code]
         );
 
         return $this->one('SELECT id, name FROM faculties WHERE name = ?', [$name])
             ?? throw new \RuntimeException('Unable to resolve the submitted faculty.');
     }
 
-    private function findOrCreateDepartment(int $facultyId, string $name): array
+    private function findOrCreateDepartment(string $facultyId, string $name): array
     {
         $department = $this->one(
             'SELECT id, name, code FROM departments WHERE faculty_id = ? AND name = ?',
@@ -206,8 +206,8 @@ final class AuthController extends Controller
 
         $code = $this->referenceCode('DEP', $name, (string) $facultyId);
         $this->run(
-            'INSERT INTO departments (faculty_id, name, code) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
-            [$facultyId, $name, $code]
+            'INSERT INTO departments (id, faculty_id, name, code) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = id',
+            [$this->newId(), $facultyId, $name, $code]
         );
 
         return $this->one(
@@ -231,8 +231,8 @@ final class AuthController extends Controller
         $programmeCode = strtoupper(substr(preg_replace('/[^A-Z0-9]+/', '-', $department['code']), 0, 20))
             . '-' . ($studyMode === 'FULL_TIME' ? 'FT' : 'PT');
         $this->run(
-            'INSERT INTO programmes (department_id, name, code, study_mode) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)',
-            [$department['id'], $programmeName, $programmeCode, $studyMode]
+            'INSERT INTO programmes (id, department_id, name, code, study_mode) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = id',
+            [$this->newId(), $department['id'], $programmeName, $programmeCode, $studyMode]
         );
 
         return $this->one(
@@ -264,8 +264,8 @@ final class AuthController extends Controller
             $type = $student ? 'STUDENT' : 'ADMIN';
             $token = bin2hex(random_bytes(32));
             $this->run(
-                'INSERT INTO password_reset_tokens (identity_type, identity_id, token_hash, expires_at) VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 HOUR))',
-                [$type, $record['id'], hash('sha256', $token)]
+                'INSERT INTO password_reset_tokens (id, identity_type, identity_id, token_hash, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 HOUR))',
+                [$this->newId(), $type, $record['id'], hash('sha256', $token)]
             );
             error_log("Password reset delivery is not configured for {$type} id {$record['id']}.");
         }
@@ -320,8 +320,8 @@ final class AuthController extends Controller
     {
         $token = bin2hex(random_bytes(32));
         $this->run(
-            'INSERT INTO api_tokens (actor_type, actor_id, token_hash, expires_at) VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 12 HOUR))',
-            [$type, $record['id'], hash('sha256', $token)]
+            'INSERT INTO api_tokens (id, actor_type, actor_id, token_hash, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 12 HOUR))',
+            [$this->newId(), $type, $record['id'], hash('sha256', $token)]
         );
 
         return [
