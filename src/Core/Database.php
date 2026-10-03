@@ -18,9 +18,9 @@ final class Database
 
         $host = getenv('DB_HOST') ?: '127.0.0.1';
         $port = getenv('DB_PORT') ?: '3306';
-        $database = getenv('DB_DATABASE') ?: 'obong_payment';
-        $username = getenv('DB_USERNAME') ?: 'root';
-        $password = getenv('DB_PASSWORD') ?: '';
+        $database = getenv('DB_DATABASE') ?: 'obong_portal';
+        $username = getenv('DB_USERNAME') ?: 'obong_uni';
+        $password = getenv('DB_PASSWORD') ?: 'Admin@Obong26';
         $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4', $host, $port, $database);
 
         self::$connection = new PDO($dsn, $username, $password, [

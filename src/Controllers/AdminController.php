@@ -10,6 +10,8 @@ use Obong\Payment\Core\Request;
 
 final class AdminController extends Controller
 {
+    private const GLOBAL_SCOPE_ID = '00000000-0000-0000-0000-000000000000';
+
     public function stats(Request $request, array $params, ?array $actor): array
     {
         $this->requireActor($actor, 'ADMIN');
@@ -405,8 +407,8 @@ final class AdminController extends Controller
             $this->assertPaymentTypeScopeAvailable($session['id'], $code, $facultyId, $departmentId, $applicableLevel);
             $paymentTypeId = $this->newId();
             $this->run(
-                'INSERT INTO payment_types (id, academic_session_id, faculty_id, department_id, name, code, amount, applicable_level, is_mandatory, allow_partial_payment, status, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [$paymentTypeId, $session['id'], $facultyId, $departmentId, $name, $code, $amount, $applicableLevel, $isMandatory, $allowPartialPayment, $status, trim((string) ($body['description'] ?? '')) ?: null, $actor['id']]
+                'INSERT INTO payment_types (id, academic_session_id, faculty_id, department_id, faculty_scope_id, department_scope_id, name, code, amount, applicable_level, is_mandatory, allow_partial_payment, status, description, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [$paymentTypeId, $session['id'], $facultyId, $departmentId, $facultyId ?? self::GLOBAL_SCOPE_ID, $departmentId ?? self::GLOBAL_SCOPE_ID, $name, $code, $amount, $applicableLevel, $isMandatory, $allowPartialPayment, $status, trim((string) ($body['description'] ?? '')) ?: null, $actor['id']]
             );
 
             if ($hasSchedules) {
@@ -476,7 +478,7 @@ final class AdminController extends Controller
                 [$facultyId, $departmentId] = $this->resolvePaymentTypeScope($body, $current);
             }
             $this->assertPaymentTypeScopeAvailable($session['id'], $code, $facultyId, $departmentId, $level, $id);
-            $this->run('UPDATE payment_types SET academic_session_id = ?, faculty_id = ?, department_id = ?, name = ?, code = ?, amount = ?, applicable_level = ?, is_mandatory = ?, allow_partial_payment = ?, status = ?, description = ? WHERE id = ?', [$session['id'], $facultyId, $departmentId, $name, $code, $amount, $level, $mandatory, $allowPartialPayment, $status, $description, $id]);
+            $this->run('UPDATE payment_types SET academic_session_id = ?, faculty_id = ?, department_id = ?, faculty_scope_id = ?, department_scope_id = ?, name = ?, code = ?, amount = ?, applicable_level = ?, is_mandatory = ?, allow_partial_payment = ?, status = ?, description = ? WHERE id = ?', [$session['id'], $facultyId, $departmentId, $facultyId ?? self::GLOBAL_SCOPE_ID, $departmentId ?? self::GLOBAL_SCOPE_ID, $name, $code, $amount, $level, $mandatory, $allowPartialPayment, $status, $description, $id]);
             if ($hasSchedules) {
                 $this->replacePaymentTypeFeeSchedules($id, $body['schedules']);
             }
