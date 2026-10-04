@@ -18,7 +18,7 @@ spl_autoload_register(static function (string $class): void {
     }
 });
 
-$allowedOrigin = getenv('FRONTEND_URL') ?: 'http://localhost:3000';
+$allowedOrigin = getenv('FRONTEND_URL') ?: 'https://payments.obonguniversity.com';
 header('Access-Control-Allow-Origin: ' . $allowedOrigin);
 header('Vary: Origin');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');

@@ -22,15 +22,22 @@ final class StudentController extends Controller
         $actor = $this->requireActor($actor, 'STUDENT');
         $email = strtolower(trim((string) ($request->body['email'] ?? '')));
         $phone = trim((string) ($request->body['phone'] ?? ''));
+        $regNumber = trim((string) ($request->body['regNumber'] ?? $request->body['reg_number'] ?? ''));
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new HttpException('Enter a valid email address.', 422);
         }
 
-        $this->run('UPDATE students SET email = COALESCE(NULLIF(?, \'\'), email), phone = ? WHERE id = ?', [
-            $email,
-            $phone !== '' ? $phone : null,
-            $actor['id'],
-        ]);
+        try {
+            $this->run(
+                'UPDATE students SET registration_number = COALESCE(NULLIF(?, \'\'), registration_number), email = COALESCE(NULLIF(?, \'\'), email), phone = ? WHERE id = ?',
+                [$regNumber, $email, $phone !== '' ? $phone : null, $actor['id']]
+            );
+        } catch (\PDOException $exception) {
+            if ((string) $exception->getCode() === '23000') {
+                throw new HttpException('Registration number or email is already in use.', 409);
+            }
+            throw $exception;
+        }
         $student = $this->studentRecord($actor['id']);
         $this->audit($actor, 'Updated student profile', 'Student', $student['registration_number']);
         return $this->studentPayload($student);

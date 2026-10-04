@@ -382,12 +382,15 @@ final class AdminController extends Controller
         $name = trim((string) ($body['name'] ?? ''));
         $hasSchedules = array_key_exists('schedules', $body);
         $amount = $hasSchedules ? 0.0 : filter_var($body['amount'] ?? null, FILTER_VALIDATE_FLOAT);
-        $sessionName = trim((string) ($body['session'] ?? ''));
-        $session = $sessionName !== ''
-            ? $this->one('SELECT id, name FROM academic_sessions WHERE name = ?', [$sessionName])
-            : $this->one("SELECT id, name FROM academic_sessions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT 1");
-        if ($name === '' || (!$hasSchedules && ($amount === false || $amount <= 0)) || !$session) {
-            throw new HttpException('Payment type name, valid fee amounts, and valid academic session are required.', 422);
+        if ($name === '') {
+            throw new HttpException('Payment type name is required.', 422);
+        }
+        if (!$hasSchedules && ($amount === false || $amount <= 0)) {
+            throw new HttpException('Provide a positive fee amount or at least one fee schedule.', 422);
+        }
+        $session = $this->resolvePaymentTypeSession($body);
+        if (!$session) {
+            throw new HttpException('Select a valid academic session.', 422);
         }
         $code = strtoupper(trim((string) ($body['code'] ?? preg_replace('/[^A-Z0-9]+/', '_', strtoupper($name)))));
         $applicableLevel = trim((string) ($body['applicableLevel'] ?? 'All Levels'));
@@ -418,9 +421,10 @@ final class AdminController extends Controller
             if ($hasSchedules && $status === 'ACTIVE' && $isMandatory) {
                 $this->issueScheduledInvoices($paymentTypeId, $session['id']);
             } elseif ($status === 'ACTIVE' && $isMandatory) {
+                $appliesToAllLevels = in_array($applicableLevel, ['ALL', 'All Levels'], true);
                 $this->run(
-                    "INSERT IGNORE INTO invoices (id, student_id, payment_type_id, academic_session_id, amount, status) SELECT UUID(), s.id, ?, ?, ?, 'UNPAID' FROM students s JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id WHERE s.academic_session_id = ? AND (? IS NULL OR d.faculty_id = ?) AND (? IS NULL OR d.id = ?) AND (? IN ('ALL', 'All Levels') OR s.level = ?)",
-                    [$paymentTypeId, $session['id'], $amount, $session['id'], $facultyId, $facultyId, $departmentId, $departmentId, $applicableLevel, $applicableLevel]
+                    "INSERT IGNORE INTO invoices (id, student_id, payment_type_id, academic_session_id, amount, status) SELECT UUID(), s.id, ?, ?, ?, 'UNPAID' FROM students s JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id WHERE s.academic_session_id = ? AND (? IS NULL OR d.faculty_id = ?) AND (? IS NULL OR d.id = ?) AND (? = 1 OR s.level = ?)",
+                    [$paymentTypeId, $session['id'], $amount, $session['id'], $facultyId, $facultyId, $departmentId, $departmentId, (int) $appliesToAllLevels, $applicableLevel]
                 );
             }
             $this->db->commit();
@@ -456,7 +460,7 @@ final class AdminController extends Controller
         if ($code === '' || strlen($code) > 48) {
             throw new HttpException('Fee code must contain between 1 and 48 characters.', 422);
         }
-        $session = isset($body['session']) ? $this->one('SELECT id, name FROM academic_sessions WHERE name = ?', [$body['session']]) : ['id' => $current['academic_session_id'], 'name' => $current['session_name']];
+        $session = $this->resolvePaymentTypeSession($body, $current['academic_session_id']);
         if (!$session) {
             throw new HttpException('Academic session not found.', 422);
         }
@@ -536,6 +540,30 @@ final class AdminController extends Controller
                 [$this->newId(), $paymentTypeId, $departmentId, $level, $amount]
             );
         }
+    }
+
+    private function resolvePaymentTypeSession(array $body, ?string $defaultSessionId = null): ?array
+    {
+        $sessionValue = $body['sessionId']
+            ?? $body['academicSessionId']
+            ?? $body['academic_session_id']
+            ?? $body['session']
+            ?? null;
+
+        if ($sessionValue !== null && !is_string($sessionValue) && !is_int($sessionValue)) {
+            return null;
+        }
+        if ($sessionValue === null || trim((string) $sessionValue) === '') {
+            return $defaultSessionId !== null
+                ? $this->one('SELECT id, name FROM academic_sessions WHERE id = ?', [$defaultSessionId])
+                : $this->one("SELECT id, name FROM academic_sessions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT 1");
+        }
+
+        $sessionValue = trim((string) $sessionValue);
+        $sessionId = $this->normalizeUuid($sessionValue);
+        return $sessionId !== false
+            ? $this->one('SELECT id, name FROM academic_sessions WHERE id = ?', [$sessionId])
+            : $this->one('SELECT id, name FROM academic_sessions WHERE name = ?', [$sessionValue]);
     }
 
     private function paymentTypeSchedules(string $paymentTypeId): array
@@ -653,9 +681,10 @@ final class AdminController extends Controller
         string $level,
         ?string $excludeId = null
     ): void {
+        $appliesToAllLevels = in_array($level, ['ALL', 'All Levels'], true);
         $overlap = $this->one(
-            "SELECT id FROM payment_types WHERE academic_session_id = ? AND code = ? AND (? IS NULL OR id <> ?) AND (faculty_id IS NULL OR ? IS NULL OR faculty_id = ?) AND (department_id IS NULL OR ? IS NULL OR department_id = ?) AND (applicable_level IN ('ALL', 'All Levels') OR ? IN ('ALL', 'All Levels') OR applicable_level = ?) LIMIT 1",
-            [$sessionId, $code, $excludeId, $excludeId, $facultyId, $facultyId, $departmentId, $departmentId, $level, $level]
+            "SELECT id FROM payment_types WHERE academic_session_id = ? AND code = ? AND (? IS NULL OR id <> ?) AND (faculty_id IS NULL OR ? IS NULL OR faculty_id = ?) AND (department_id IS NULL OR ? IS NULL OR department_id = ?) AND (applicable_level IN ('ALL', 'All Levels') OR ? = 1 OR applicable_level = ?) LIMIT 1",
+            [$sessionId, $code, $excludeId, $excludeId, $facultyId, $facultyId, $departmentId, $departmentId, (int) $appliesToAllLevels, $level]
         );
         if ($overlap) {
             throw new HttpException(

@@ -36,9 +36,13 @@ backend/
 
 All routes are under `/api/v1`. Protect student routes with the authenticated student's identity and admin routes with role authorization; never trust a `student_id` supplied by the browser when an access token already identifies the student.
 
+Student sign-in accepts the credential in `identifier`, `email`, `regNumber`, or `reg_number`, along with the password. An email-shaped value is matched against the student's email; other values are matched against the registration number. Existing clients that send an email value in `regNumber` remain supported.
+
+Student registration does not require a registration number. When omitted, the API assigns a unique `PENDING-...` placeholder; the student can replace it later using `PUT /student/profile` with `regNumber` (or `reg_number`). Students can sign in with their email while the placeholder is in use. Registration requires an academic session with `ACTIVE` status; an administrator must activate a session before students can register.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/auth/student/login` | Student sign-in by registration number |
+| POST | `/auth/student/login` | Student sign-in by email or registration number |
 | POST | `/auth/admin/login` | Administrator sign-in |
 | POST | `/auth/student/register` | Create a student account and initial invoices |
 | POST | `/auth/forgot-password` | Start password reset |
@@ -91,5 +95,7 @@ Check route/controller wiring with `php backend/tests/check-route-map.php`; lint
 This project uses `database/schema.sql` as the single database setup script for a fresh install. It creates the complete UUID-based schema, including faculty/department fee scopes and department-level fee schedules, in the currently selected database. On shared hosting, create the database in the hosting control panel, select it in phpMyAdmin, and import the script; database users commonly cannot run `CREATE DATABASE`. Set `DB_DATABASE` in the server environment to the exact database name shown by the host (including any account prefix), and set `DB_USERNAME` and `DB_PASSWORD` to the assigned database user's credentials. **Do not import it over a database containing data:** create a new database or back up and intentionally replace the old one first. Existing databases with numeric IDs are not migrated by this setup.
 
 The new fee schedule stores a single payment type ID with a separate amount per department and level. Existing payment types remain full-payment-only by default; an administrator can enable part payments per fee. The 60% minimum applies to the first payment only for fee types with part payments enabled.
+
+When creating or updating a payment type, `session` may be the session name or the `sess_...` ID returned by `/admin/academic-sessions`; `sessionId`, `academicSessionId`, and `academic_session_id` may also be used for the ID. If omitted during creation, the active academic session is used.
 
 Payment type edits affect the fee configuration and future invoices; existing invoice amounts remain snapshots. A payment type with any issued invoice cannot be permanently deleted, preserving billing and payment history. Set its status to inactive to stop issuing new invoices.

@@ -12,18 +12,26 @@ final class AuthController extends Controller
 {
     public function studentLogin(Request $request): array
     {
-        $regNumber = trim((string) ($request->body['regNumber'] ?? $request->body['reg_number'] ?? ''));
+        $identifier = '';
+        foreach (['identifier', 'email', 'regNumber', 'reg_number'] as $field) {
+            $value = $request->body[$field] ?? null;
+            if (is_string($value) && trim($value) !== '') {
+                $identifier = trim($value);
+                break;
+            }
+        }
         $password = (string) ($request->body['password'] ?? '');
-        if ($regNumber === '' || $password === '') {
-            throw new HttpException('Registration number and password are required.', 422);
+        if ($identifier === '' || $password === '') {
+            throw new HttpException('Email or registration number and password are required.', 422);
         }
 
+        $isEmail = filter_var($identifier, FILTER_VALIDATE_EMAIL) !== false;
         $student = $this->one(
-            'SELECT s.*, a.name AS session_name, p.name AS programme_name, p.study_mode, d.name AS department_name, f.name AS faculty_name FROM students s JOIN academic_sessions a ON a.id = s.academic_session_id JOIN programmes p ON p.id = s.programme_id JOIN departments d ON d.id = p.department_id JOIN faculties f ON f.id = d.faculty_id WHERE LOWER(s.registration_number) = LOWER(?)',
-            [$regNumber]
+            'SELECT s.*, a.name AS session_name, p.name AS programme_name, p.study_mode, d.name AS department_name, f.name AS faculty_name FROM students s JOIN academic_sessions a ON a.id = s.academic_session_id JOIN programmes p ON p.id = s.programme_id JOIN departments d ON d.id = p.department_id JOIN faculties f ON f.id = d.faculty_id WHERE LOWER(s.' . ($isEmail ? 'email' : 'registration_number') . ') = LOWER(?)',
+            [$identifier]
         );
         if (!$student || !password_verify($password, $student['password_hash'])) {
-            throw new HttpException('Invalid registration number or password.', 401);
+            throw new HttpException('Invalid email, registration number, or password.', 401);
         }
         if ($student['account_status'] !== 'ACTIVE') {
             throw new HttpException('This student account is inactive.', 403);
@@ -66,11 +74,15 @@ final class AuthController extends Controller
     public function studentRegister(Request $request): array
     {
         $body = $request->body;
-        $required = ['regNumber', 'firstName', 'surname', 'email', 'password', 'level'];
+        $required = ['firstName', 'surname', 'email', 'password', 'level'];
         foreach ($required as $field) {
             if (trim((string) ($body[$field] ?? '')) === '') {
                 throw new HttpException("{$field} is required.", 422);
             }
+        }
+        $regNumber = trim((string) ($body['regNumber'] ?? $body['reg_number'] ?? ''));
+        if ($regNumber === '') {
+            $regNumber = 'PENDING-' . bin2hex(random_bytes(16));
         }
         if (!filter_var($body['email'], FILTER_VALIDATE_EMAIL)) {
             throw new HttpException('Enter a valid email address.', 422);
@@ -82,6 +94,9 @@ final class AuthController extends Controller
         $programmeId = $body['programmeId'] ?? $body['programme_id'] ?? null;
         if (!$programmeId && isset($body['programme']) && is_numeric($body['programme'])) {
             $programmeId = $body['programme'];
+        }
+        if (is_string($programmeId) && preg_match('/^prg_([0-9a-f-]{36})$/i', $programmeId, $matches)) {
+            $programmeId = $matches[1];
         }
         $studyMode = null;
         if (!$programmeId) {
@@ -104,7 +119,7 @@ final class AuthController extends Controller
 
         $session = $this->one("SELECT * FROM academic_sessions WHERE status = 'ACTIVE' ORDER BY id DESC LIMIT 1");
         if (!$session) {
-            throw new HttpException('The active academic session or selected programme is unavailable.', 422);
+            throw new HttpException('Student registration is unavailable because there is no active academic session. Ask an administrator to activate an academic session.', 422);
         }
 
         try {
@@ -121,7 +136,7 @@ final class AuthController extends Controller
                 [$programmeId]
             );
             if (!$programme) {
-                throw new HttpException('The active academic session or selected programme is unavailable.', 422);
+                throw new HttpException('The selected programme was not found. Please select a valid programme and try again.', 422);
             }
 
             $studentId = $this->newId();
@@ -131,7 +146,7 @@ final class AuthController extends Controller
                     $studentId,
                     $session['id'],
                     $programme['id'],
-                    trim($body['regNumber']),
+                    $regNumber,
                     trim($body['surname']),
                     trim($body['firstName']),
                     trim((string) ($body['otherNames'] ?? '')) ?: null,
@@ -157,7 +172,7 @@ final class AuthController extends Controller
                 $this->db->rollBack();
             }
             if ((string) $exception->getCode() === '23000') {
-                throw new HttpException('Registration number or email is already registered.', 409);
+                throw new HttpException('Registration number or email is already in use.', 409);
             }
             throw $exception;
         } catch (\Throwable $exception) {
