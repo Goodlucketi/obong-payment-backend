@@ -73,19 +73,24 @@ final class PaymentController extends Controller
         }
         $amount = $requestedCents / 100;
 
-        $reference = 'OBONG-' . gmdate('YmdHis') . '-' . strtoupper(bin2hex(random_bytes(4)));
-        $gatewayResponse = $this->paystackRequest('POST', '/transaction/initialize', [
+        $reference = 'OBONG-' . gmdate('YmdHis') . '-' . strtoupper(bin2hex(random_bytes(16)));
+        $payload = [
             'email' => $invoice['email'],
             'amount' => (int) round($amount * 100),
             'currency' => getenv('PAYSTACK_CURRENCY') ?: 'NGN',
             'reference' => $reference,
-            'callback_url' => (string) ($request->body['callback_url'] ?? ''),
             'metadata' => [
                 'invoice_id' => $invoice['id'],
                 'student_id' => $actor['id'],
                 'registration_number' => $invoice['registration_number'],
             ],
-        ]);
+        ];
+        $callbackUrl = trim((string) ($request->body['callback_url'] ?? ''));
+        if ($callbackUrl !== '') {
+            $payload['callback_url'] = $callbackUrl;
+        }
+
+        $gatewayResponse = $this->paystackRequest('POST', '/transaction/initialize', $payload);
 
         $data = $gatewayResponse['data'] ?? [];
         if (empty($data['authorization_url'])) {
@@ -119,13 +124,12 @@ final class PaymentController extends Controller
 
     public function verify(Request $request, array $params, ?array $actor): array
     {
-        $actor = $this->requireActor($actor);
         $reference = $params['reference'];
         $transaction = $this->one('SELECT * FROM transactions WHERE transaction_reference = ? OR paystack_reference = ?', [$reference, $reference]);
         if (!$transaction) {
             throw new HttpException('Transaction reference not found.', 404);
         }
-        if ($actor['type'] === 'STUDENT' && $transaction['student_id'] !== $actor['id']) {
+        if ($actor !== null && $actor['type'] === 'STUDENT' && $transaction['student_id'] !== $actor['id']) {
             throw new HttpException('Forbidden.', 403);
         }
 
@@ -172,7 +176,22 @@ final class PaymentController extends Controller
     {
         $status = strtolower((string) ($gatewayData['status'] ?? ''));
         $expectedKobo = (int) round((float) $transaction['amount'] * 100);
-        $actualKobo = (int) ($gatewayData['amount'] ?? 0);
+        $actualKobo = (int) (
+            $gatewayData['requested_amount']
+            ?? $gatewayData['amount']
+            ?? 0
+        );
+
+        error_log(json_encode([
+            'reference' => $transaction['transaction_reference'],
+            'status' => $status,
+            'expected_kobo' => $expectedKobo,
+            'actual_kobo' => $actualKobo,
+            'amount' => $gatewayData['amount'] ?? null,
+            'requested_amount' => $gatewayData['requested_amount'] ?? null,
+            'fees' => $gatewayData['fees'] ?? null,
+        ], JSON_UNESCAPED_SLASHES));
+
         $successful = $status === 'success' && $actualKobo === $expectedKobo;
 
         $this->db->beginTransaction();
@@ -225,7 +244,7 @@ final class PaymentController extends Controller
             throw new HttpException('Paystack secret key is not configured on the backend.', 503);
         }
 
-        $headers = "Authorization: Bearer {$secret}\r\nAccept: application/json\r\nContent-Type: application/json\r\n";
+        $headers = "Authorization: Bearer {$secret}\r\nContent-Type: application/json\r\n";
         $options = [
             'http' => [
                 'method' => $method,
@@ -243,8 +262,15 @@ final class PaymentController extends Controller
             throw new HttpException('Could not connect to Paystack.', 502);
         }
         $decoded = json_decode($response, true);
-        if (!is_array($decoded) || ($decoded['status'] ?? false) !== true) {
-            throw new HttpException('Paystack rejected the payment request.', 502);
+        if (!is_array($decoded)) {
+            throw new HttpException('Paystack returned an invalid response.', 502);
+        }
+        if (($decoded['status'] ?? false) !== true) {
+            $gatewayMessage = trim((string) ($decoded['message'] ?? ''));
+            $message = $gatewayMessage !== ''
+                ? 'Paystack rejected the payment request: ' . $gatewayMessage
+                : 'Paystack rejected the payment request.';
+            throw new HttpException($message, 502);
         }
         return $decoded;
     }

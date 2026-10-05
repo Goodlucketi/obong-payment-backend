@@ -36,7 +36,7 @@ backend/
 
 All routes are under `/api/v1`. Protect student routes with the authenticated student's identity and admin routes with role authorization; never trust a `student_id` supplied by the browser when an access token already identifies the student.
 
-Student sign-in accepts the credential in `identifier`, `email`, `regNumber`, or `reg_number`, along with the password. An email-shaped value is matched against the student's email; other values are matched against the registration number. Existing clients that send an email value in `regNumber` remain supported.
+Student sign-in accepts the credential in `identifier`, `email`, `regNumber`, or `reg_number`, along with the password. An email-shaped value is matched against the student's email; other values are matched against the registration number. Existing clients that send an email value in `regNumber` remain supported. Students must verify their email before signing in.
 
 Student registration does not require a registration number. When omitted, the API assigns a unique `PENDING-...` placeholder; the student can replace it later using `PUT /student/profile` with `regNumber` (or `reg_number`). Students can sign in with their email while the placeholder is in use. Registration requires an academic session with `ACTIVE` status; an administrator must activate a session before students can register.
 
@@ -44,7 +44,9 @@ Student registration does not require a registration number. When omitted, the A
 | --- | --- | --- |
 | POST | `/auth/student/login` | Student sign-in by email or registration number |
 | POST | `/auth/admin/login` | Administrator sign-in |
-| POST | `/auth/student/register` | Create a student account and initial invoices |
+| POST | `/auth/student/register` | Create a student account and initial invoices, then email a verification link |
+| GET | `/auth/student/verify-email?token={token}` | Verify a student's email address using the single-use link |
+| POST | `/auth/student/resend-verification` | Resend verification email; JSON body: `{ "email": "student@example.com" }` |
 | POST | `/auth/forgot-password` | Start password reset |
 | POST | `/auth/reset-password` | Complete password reset |
 | POST | `/auth/logout` | Revoke the current bearer token |
@@ -53,7 +55,7 @@ Student registration does not require a registration number. When omitted, the A
 | GET | `/student/invoices` | Current student's invoices |
 | GET | `/student/payment-summary` | Student payment totals |
 | POST | `/payments/initialize` | Validate invoice and initialize Paystack transaction |
-| GET | `/payments/verify/{reference}` | Verify reference server-to-server with Paystack |
+| GET | `/payments/verify/{reference}` | Verify reference server-to-server with Paystack; usable from the payment return page without a login session, using the unguessable transaction reference |
 | POST | `/payments/webhook` | Validate Paystack signature and process event idempotently |
 | GET | `/transactions` | Filter transaction list |
 | GET | `/transactions/{reference}` | Transaction detail |
@@ -84,13 +86,14 @@ Student registration does not require a registration number. When omitted, the A
 2. In `C:\xampp\apache\conf\httpd.conf`, ensure `mod_rewrite` is enabled and the `htdocs` directory allows overrides (`AllowOverride All`). Restart Apache after changing Apache configuration.
 3. In `C:\xampp\php\php.ini`, enable `extension=pdo_mysql` and confirm `extension_dir` points to PHP's `ext` directory. Restart Apache after changing PHP configuration.
 4. Copy `backend/.env.example` to `backend/.env`; set MySQL credentials and the Paystack test secret/public keys. Set `FRONTEND_URL` to the exact Vite origin in your browser (for example, `http://localhost:3000` or `http://127.0.0.1:3000`).
+   Configure email delivery with `API_PUBLIC_URL` (the public API base ending in `/api/v1`), `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_ENCRYPTION` (`starttls` or `ssl`), `MAIL_FROM_ADDRESS`, and optionally `MAIL_FROM_NAME`. Use a TLS-enabled SMTP account. Email verification links expire after 24 hours. Registration no longer returns an access token; the frontend should show the check-email message, and then offer resend verification.
 5. Start MySQL in the XAMPP Control Panel. In phpMyAdmin, create a database, select it, then import `backend/database/schema.sql`; the schema intentionally does not create or select a database. Then add the university's faculties, departments, active academic session, payment types, and initial administrator account. When inserting records manually, generate IDs with `UUID()`, for example `INSERT INTO academic_sessions (id, name, starts_on, ends_on, status) VALUES (UUID(), '2026/2027', '2026-09-01', '2027-08-31', 'ACTIVE');`.
 6. Copy the repository's `.env.local.example` to `.env.local` and set `VITE_API_URL=http://localhost/Obong_Payment/backend/public/api/v1` (adjust `Obong_Payment` if the XAMPP folder has a different name).
 7. From the project root, run `npm run dev`. The frontend runs at Vite's local URL and calls the XAMPP API. To verify Apache routing, open `http://localhost/Obong_Payment/backend/public/health`; it should return JSON with `status: success`.
 
 The API also works with PHP's built-in server: `php -S 127.0.0.1:8000 -t backend/public backend/public/index.php`, with `VITE_API_URL=http://127.0.0.1:8000/api/v1`.
 
-Check route/controller wiring with `php backend/tests/check-route-map.php`; lint PHP with `php -l` on the backend files. Authentication, role checks, password hashing, server-side Paystack initialization/verification, webhook signature validation, transaction settlement, and receipt issuance are implemented. Before production, verify student registrations against the Registrar's authoritative roster; password reset delivery still needs an email provider, and reconciliation currently summarizes local states rather than re-verifying every transaction with Paystack. Exercise all financial/admin paths against configured MySQL and Paystack test accounts before production use.
+For an existing database, back it up and run `database/migrations/20261005_add_student_email_verification.sql` once before deploying the updated API; this marks existing student accounts verified and creates the verification-token table. Fresh installations get the same schema from `database/schema.sql`. Check route/controller wiring with `php backend/tests/check-route-map.php`; lint PHP with `php -l` on the backend files. Authentication, role checks, password hashing, email verification via SMTP, server-side Paystack initialization/verification, webhook signature validation, transaction settlement, and receipt issuance are implemented. Before production, verify student registrations against the Registrar's authoritative roster; password reset delivery still needs an email provider, and reconciliation currently summarizes local states rather than re-verifying every transaction with Paystack. Exercise all financial/admin paths against configured MySQL and Paystack test accounts before production use.
 
 This project uses `database/schema.sql` as the single database setup script for a fresh install. It creates the complete UUID-based schema, including faculty/department fee scopes and department-level fee schedules, in the currently selected database. On shared hosting, create the database in the hosting control panel, select it in phpMyAdmin, and import the script; database users commonly cannot run `CREATE DATABASE`. Set `DB_DATABASE` in the server environment to the exact database name shown by the host (including any account prefix), and set `DB_USERNAME` and `DB_PASSWORD` to the assigned database user's credentials. **Do not import it over a database containing data:** create a new database or back up and intentionally replace the old one first. Existing databases with numeric IDs are not migrated by this setup.
 

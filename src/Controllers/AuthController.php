@@ -7,6 +7,7 @@ namespace Obong\Payment\Controllers;
 use Obong\Payment\Core\Controller;
 use Obong\Payment\Core\HttpException;
 use Obong\Payment\Core\Request;
+use Obong\Payment\Core\SmtpMailer;
 
 final class AuthController extends Controller
 {
@@ -32,6 +33,9 @@ final class AuthController extends Controller
         );
         if (!$student || !password_verify($password, $student['password_hash'])) {
             throw new HttpException('Invalid email, registration number, or password.', 401);
+        }
+        if ($student['email_verified_at'] === null) {
+            throw new HttpException('Verify your email address before signing in. Request a new verification email if needed.', 403);
         }
         if ($student['account_status'] !== 'ACTIVE') {
             throw new HttpException('This student account is inactive.', 403);
@@ -141,7 +145,7 @@ final class AuthController extends Controller
 
             $studentId = $this->newId();
             $this->run(
-                'INSERT INTO students (id, academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO students (id, academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
                 [
                     $studentId,
                     $session['id'],
@@ -187,9 +191,105 @@ final class AuthController extends Controller
             [$studentId]
         );
         $this->audit(['type' => 'SYSTEM', 'name' => 'System'], 'Registered student account', 'Student', $student['registration_number']);
-        $response = $this->loginResponse('STUDENT', $student, $this->studentPayload($student));
-        $response['message'] = 'Student account successfully created. You can now proceed to pay school fees.';
-        return $response;
+        $this->sendVerificationEmail($student);
+        return [
+            'status' => 'success',
+            'message' => 'Your account was created. Check your email for a verification link before signing in.',
+            'email' => $student['email'],
+        ];
+    }
+
+    public function verifyStudentEmail(Request $request): array
+    {
+        $token = trim((string) ($request->query['token'] ?? ''));
+        if (!preg_match('/^[a-f0-9]{64}$/i', $token)) {
+            throw new HttpException('Email verification link is invalid or expired.', 400);
+        }
+
+        $this->db->beginTransaction();
+        try {
+            $verification = $this->one(
+                'SELECT * FROM email_verification_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > UTC_TIMESTAMP() FOR UPDATE',
+                [hash('sha256', $token)]
+            );
+            if (!$verification) {
+                throw new HttpException('Email verification link is invalid or expired.', 400);
+            }
+            $this->run(
+                'UPDATE students SET email_verified_at = COALESCE(email_verified_at, UTC_TIMESTAMP()) WHERE id = ?',
+                [$verification['student_id']]
+            );
+            $this->run(
+                'UPDATE email_verification_tokens SET used_at = UTC_TIMESTAMP() WHERE student_id = ? AND used_at IS NULL',
+                [$verification['student_id']]
+            );
+            $this->db->commit();
+        } catch (\Throwable $exception) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $exception;
+        }
+
+        return ['status' => 'success', 'message' => 'Your email address has been verified. You can now sign in.'];
+    }
+
+    public function resendStudentEmailVerification(Request $request): array
+    {
+        $email = strtolower(trim((string) ($request->body['email'] ?? '')));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new HttpException('Enter a valid email address.', 422);
+        }
+
+        $student = $this->one(
+            'SELECT id, email, first_name, surname, email_verified_at FROM students WHERE LOWER(email) = LOWER(?)',
+            [$email]
+        );
+        if ($student && $student['email_verified_at'] === null) {
+            $recent = $this->one(
+                'SELECT id FROM email_verification_tokens WHERE student_id = ? AND created_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 MINUTE) LIMIT 1',
+                [$student['id']]
+            );
+            if (!$recent) {
+                $this->sendVerificationEmail($student);
+            }
+        }
+
+        return [
+            'status' => 'success',
+            'message' => 'If the address belongs to an unverified student account, a verification email will be sent.',
+        ];
+    }
+
+    private function sendVerificationEmail(array $student): void
+    {
+        $apiUrl = rtrim(getenv('API_PUBLIC_URL') ?: '', '/');
+        if ($apiUrl === '') {
+            throw new HttpException('Email verification is not configured on the server.', 503);
+        }
+
+        $this->run(
+            'UPDATE email_verification_tokens SET used_at = UTC_TIMESTAMP() WHERE student_id = ? AND used_at IS NULL',
+            [$student['id']]
+        );
+        $token = bin2hex(random_bytes(32));
+        $this->run(
+            'INSERT INTO email_verification_tokens (id, student_id, token_hash, expires_at) VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR))',
+            [$this->newId(), $student['id'], hash('sha256', $token)]
+        );
+        $link = $apiUrl . '/auth/student/verify-email?token=' . rawurlencode($token);
+        $name = htmlspecialchars(trim(($student['first_name'] ?? '') . ' ' . ($student['surname'] ?? '')), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $safeLink = htmlspecialchars($link, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $html = '<p>Hello ' . $name . ',</p><p>Verify your email address to activate sign-in to your student account:</p>'
+            . '<p><a href="' . $safeLink . '">Verify email address</a></p><p>This link expires in 24 hours. If you did not create this account, you can ignore this email.</p>';
+        $text = "Hello {$student['first_name']},\r\n\r\nVerify your email address to activate sign-in to your student account:\r\n{$link}\r\n\r\nThis link expires in 24 hours. If you did not create this account, you can ignore this email.";
+
+        try {
+            (new SmtpMailer())->send((string) $student['email'], 'Verify your student account email', $text, $html);
+        } catch (\RuntimeException $exception) {
+            error_log('Student verification email delivery failed: ' . $exception->getMessage());
+            throw new HttpException('The account was created, but the verification email could not be sent. Please try requesting another verification email shortly.', 503);
+        }
     }
 
     private function findOrCreateFaculty(string $name): array
@@ -364,6 +464,7 @@ final class AuthController extends Controller
             'fullName' => $fullName,
             'email' => $student['email'],
             'phone' => $student['phone'],
+            'emailVerified' => $student['email_verified_at'] !== null,
             'faculty' => $student['faculty_name'],
             'department' => $student['department_name'],
             'programme' => $student['programme_name'],

@@ -28,19 +28,50 @@ final class StudentController extends Controller
         }
 
         try {
-            $this->run(
-                'UPDATE students SET registration_number = COALESCE(NULLIF(?, \'\'), registration_number), email = COALESCE(NULLIF(?, \'\'), email), phone = ? WHERE id = ?',
-                [$regNumber, $email, $phone !== '' ? $phone : null, $actor['id']]
-            );
+            $this->db->beginTransaction();
+            $current = $this->one('SELECT email FROM students WHERE id = ?', [$actor['id']]);
+            if (!$current) {
+                throw new HttpException('Student not found.', 404);
+            }
+            $emailChanged = $email !== '' && strtolower($email) !== strtolower((string) $current['email']);
+            if ($emailChanged) {
+                $this->run(
+                    'UPDATE students SET registration_number = COALESCE(NULLIF(?, \'\'), registration_number), email = ?, phone = ?, email_verified_at = NULL WHERE id = ?',
+                    [$regNumber, $email, $phone !== '' ? $phone : null, $actor['id']]
+                );
+                $this->run(
+                    'UPDATE email_verification_tokens SET used_at = UTC_TIMESTAMP() WHERE student_id = ? AND used_at IS NULL',
+                    [$actor['id']]
+                );
+                $this->run('DELETE FROM api_tokens WHERE actor_type = \'STUDENT\' AND actor_id = ?', [$actor['id']]);
+            } else {
+                $this->run(
+                    'UPDATE students SET registration_number = COALESCE(NULLIF(?, \'\'), registration_number), email = COALESCE(NULLIF(?, \'\'), email), phone = ? WHERE id = ?',
+                    [$regNumber, $email, $phone !== '' ? $phone : null, $actor['id']]
+                );
+            }
+            $this->db->commit();
         } catch (\PDOException $exception) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
             if ((string) $exception->getCode() === '23000') {
                 throw new HttpException('Registration number or email is already in use.', 409);
+            }
+            throw $exception;
+        } catch (\Throwable $exception) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
             }
             throw $exception;
         }
         $student = $this->studentRecord($actor['id']);
         $this->audit($actor, 'Updated student profile', 'Student', $student['registration_number']);
-        return $this->studentPayload($student);
+        $payload = $this->studentPayload($student);
+        if ($emailChanged) {
+            $payload['message'] = 'Email address changed. Request a verification email for the new address before signing in again.';
+        }
+        return $payload;
     }
 
     public function invoices(Request $request, array $params, ?array $actor): array
@@ -114,6 +145,7 @@ final class StudentController extends Controller
             'otherNames' => $student['other_names'] ?? '',
             'fullName' => trim(implode(' ', array_filter([$student['first_name'], $student['other_names'], $student['surname']]))),
             'email' => $student['email'],
+            'emailVerified' => $student['email_verified_at'] !== null,
             'phone' => $student['phone'],
             'faculty' => $student['faculty_name'],
             'department' => $student['department_name'],

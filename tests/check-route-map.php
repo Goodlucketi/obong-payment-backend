@@ -18,7 +18,8 @@ spl_autoload_register(static function (string $class) use ($prefix, $backendRoot
 });
 
 $failures = [];
-foreach (require $backendRoot . '/routes/api.php' as $route) {
+$routes = require $backendRoot . '/routes/api.php';
+foreach ($routes as $route) {
     [$method, $path, $handler] = $route;
     [$controllerName, $action] = explode('@', $handler, 2);
     $class = $prefix . 'Controllers' . chr(92) . $controllerName;
@@ -31,11 +32,39 @@ foreach (require $backendRoot . '/routes/api.php' as $route) {
     echo "OK {$method} {$path}\n";
 }
 
+$criticalFlowRoutes = [
+    ['POST', '/api/v1/auth/student/register', 'AuthController@studentRegister'],
+    ['GET', '/api/v1/auth/student/verify-email', 'AuthController@verifyStudentEmail'],
+    ['POST', '/api/v1/auth/student/resend-verification', 'AuthController@resendStudentEmailVerification'],
+    ['POST', '/api/v1/auth/student/login', 'AuthController@studentLogin'],
+    ['POST', '/api/v1/payments/initialize', 'PaymentController@initialize'],
+    ['GET', '/api/v1/payments/verify/{reference}', 'PaymentController@verify'],
+    ['GET', '/api/v1/transactions/{reference}', 'TransactionController@show'],
+    ['GET', '/api/v1/receipts/{receiptOrReference}', 'ReceiptController@show'],
+];
+foreach ($criticalFlowRoutes as [$method, $path, $handler]) {
+    $matches = array_values(array_filter(
+        $routes,
+        static fn (array $route): bool => $route[0] === $method && $route[1] === $path
+    ));
+    if (count($matches) !== 1 || $matches[0][2] !== $handler) {
+        $failures[] = "Critical flow route is missing, duplicated, or mapped incorrectly: {$method} {$path} -> {$handler}";
+    }
+}
+
 $router = new Obong\Payment\Core\Router([]);
 $matchMethod = new ReflectionMethod($router, 'match');
-$params = $matchMethod->invoke($router, '/api/v1/payments/verify/{reference}', '/api/v1/payments/verify/OBONG-REF-123');
-if ($params !== ['reference' => 'OBONG-REF-123']) {
-    $failures[] = 'Dynamic route parameter extraction failed.';
+$reference = 'OBONG-REF-123';
+$referenceRoutes = [
+    ['/api/v1/payments/verify/{reference}', '/api/v1/payments/verify/' . $reference, 'reference'],
+    ['/api/v1/transactions/{reference}', '/api/v1/transactions/' . $reference, 'reference'],
+    ['/api/v1/receipts/{receiptOrReference}', '/api/v1/receipts/' . $reference, 'receiptOrReference'],
+];
+foreach ($referenceRoutes as [$pattern, $path, $parameter]) {
+    $params = $matchMethod->invoke($router, $pattern, $path);
+    if ($params !== [$parameter => $reference]) {
+        $failures[] = "Transaction reference is not extracted consistently for {$path}.";
+    }
 }
 
 if ($failures) {
@@ -43,4 +72,4 @@ if ($failures) {
     exit(1);
 }
 
-echo "All route handlers exist.\n";
+echo "All route handlers exist and critical flow routes are consistent.\n";
