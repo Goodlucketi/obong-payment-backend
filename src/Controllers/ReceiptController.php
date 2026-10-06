@@ -47,7 +47,7 @@ final class ReceiptController extends Controller
     private function find(string $identifier): ?array
     {
         return $this->one(
-            'SELECT r.receipt_number, r.verification_code, t.id AS transaction_id, t.transaction_reference, t.paystack_reference, t.amount, t.channel, t.status, t.created_at, s.id AS student_id, s.registration_number, s.first_name, s.other_names, s.surname, p.name AS payment_type_name, a.name AS session_name, d.name AS department_name, f.name AS faculty_name, pr.name AS programme_name, s.level, t.verified_at FROM receipts r JOIN transactions t ON t.id = r.transaction_id JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id JOIN faculties f ON f.id = d.faculty_id WHERE r.receipt_number = ? OR t.transaction_reference = ? OR t.paystack_reference = ? OR r.verification_code = ? LIMIT 1',
+            'SELECT r.receipt_number, r.verification_code, t.id AS transaction_id, t.transaction_reference, t.paystack_reference, t.gateway, t.amount, t.channel, t.status, t.created_at, s.id AS student_id, s.registration_number, s.first_name, s.other_names, s.surname, p.name AS payment_type_name, a.name AS session_name, d.name AS department_name, f.name AS faculty_name, pr.name AS programme_name, s.level, t.verified_at FROM receipts r JOIN transactions t ON t.id = r.transaction_id JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id JOIN programmes pr ON pr.id = s.programme_id JOIN departments d ON d.id = pr.department_id JOIN faculties f ON f.id = d.faculty_id WHERE r.receipt_number = ? OR t.transaction_reference = ? OR t.paystack_reference = ? OR r.verification_code = ? LIMIT 1',
             [$identifier, $identifier, $identifier, $identifier]
         );
     }
@@ -58,6 +58,7 @@ final class ReceiptController extends Controller
             'receiptNumber' => $row['receipt_number'],
             'transactionReference' => $row['transaction_reference'],
             'paystackReference' => $row['paystack_reference'],
+            'paymentSource' => $row['gateway'],
             'studentName' => trim(implode(' ', array_filter([$row['first_name'], $row['other_names'], $row['surname']]))),
             'regNumber' => $row['registration_number'],
             'faculty' => $row['faculty_name'],
@@ -69,8 +70,8 @@ final class ReceiptController extends Controller
             'amount' => (float) $row['amount'],
             'paymentDate' => $row['created_at'],
             'status' => $row['status'],
-            'channel' => $row['channel'] ?: 'Paystack',
-            'verifiedBy' => $row['verified_at'] ? 'Paystack API' : 'Pending verification',
+            'channel' => $row['channel'] ?: ($row['gateway'] === 'TOKEN' ? 'Payment Token' : 'Paystack'),
+            'verifiedBy' => !$row['verified_at'] ? 'Pending verification' : ($row['gateway'] === 'TOKEN' ? 'Payment Token' : 'Paystack API'),
         ];
     }
 }

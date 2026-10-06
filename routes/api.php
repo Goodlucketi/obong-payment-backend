@@ -24,6 +24,7 @@ return [
     ['GET', '/api/v1/student/invoices', 'StudentController@invoices', ['type' => 'STUDENT']],
     ['GET', '/api/v1/student/payment-summary', 'StudentController@paymentSummary', ['type' => 'STUDENT']],
     ['POST', '/api/v1/payments/initialize', 'PaymentController@initialize', ['type' => 'STUDENT']],
+    ['POST', '/api/v1/payments/redeem-token', 'PaymentController@redeemToken', ['type' => 'STUDENT']],
     ['GET', '/api/v1/payments/verify/{reference}', 'PaymentController@verify'],
     ['POST', '/api/v1/payments/webhook', 'PaymentController@webhook'],
     ['GET', '/api/v1/transactions', 'TransactionController@index', ['authenticated' => true]],
@@ -50,6 +51,7 @@ return [
     ['PUT', '/api/v1/payment-types/{id}', 'AdminController@updatePaymentType', ['roles' => ['SUPER_ADMIN', 'BURSAR']]],
     ['DELETE', '/api/v1/payment-types/{id}', 'AdminController@deletePaymentType', ['roles' => ['SUPER_ADMIN', 'BURSAR']]],
     ['POST', '/api/v1/admin/verify-payment', 'AdminController@verifyPayment', ['type' => 'ADMIN']],
+    ['POST', '/api/v1/admin/payment-tokens', 'PaymentController@createToken', ['roles' => ['SUPER_ADMIN']]],
     ['GET', '/api/v1/reconciliation', 'AdminController@reconciliation', ['roles' => ['SUPER_ADMIN', 'BURSAR']]],
     ['GET', '/api/v1/reports/summary', 'AdminController@reportSummary', ['type' => 'ADMIN']],
 ];

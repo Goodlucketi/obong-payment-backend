@@ -61,7 +61,7 @@ CREATE TABLE students (
   phone VARCHAR(32) NULL,
   level VARCHAR(12) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
-  email_verified_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+  email_verified_at DATETIME NULL DEFAULT NULL,
   account_status ENUM('ACTIVE', 'INACTIVE', 'SUSPENDED') NOT NULL DEFAULT 'ACTIVE',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -80,6 +80,7 @@ CREATE TABLE email_verification_tokens (
   student_id CHAR(36) NOT NULL,
   token_hash CHAR(64) NOT NULL,
   expires_at DATETIME NOT NULL,
+  sent_at DATETIME NULL,
   used_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -208,6 +209,34 @@ CREATE TABLE transactions (
   CONSTRAINT fk_transactions_student FOREIGN KEY (student_id)
     REFERENCES students (id) ON UPDATE CASCADE ON DELETE RESTRICT,
   CONSTRAINT chk_transactions_amount CHECK (amount > 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE payment_tokens (
+  id CHAR(36) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  invoice_id CHAR(36) NOT NULL,
+  student_id CHAR(36) NOT NULL,
+  issued_by CHAR(36) NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'NGN',
+  expires_at DATETIME NOT NULL,
+  redeemed_at DATETIME NULL,
+  transaction_id CHAR(36) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payment_tokens_hash (token_hash),
+  UNIQUE KEY uq_payment_tokens_transaction (transaction_id),
+  KEY idx_payment_tokens_student_invoice (student_id, invoice_id),
+  KEY idx_payment_tokens_expiration (expires_at),
+  CONSTRAINT fk_payment_tokens_invoice FOREIGN KEY (invoice_id)
+    REFERENCES invoices (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_payment_tokens_student FOREIGN KEY (student_id)
+    REFERENCES students (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_payment_tokens_issuer FOREIGN KEY (issued_by)
+    REFERENCES administrators (id) ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT fk_payment_tokens_transaction FOREIGN KEY (transaction_id)
+    REFERENCES transactions (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT chk_payment_tokens_amount CHECK (amount > 0)
 ) ENGINE=InnoDB;
 
 CREATE TABLE receipts (

@@ -12,4 +12,14 @@ final class Response
         echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
+
+    public static function redirect(string $url): never
+    {
+        if (!preg_match('#^https?://#i', $url) || str_contains($url, "\r") || str_contains($url, "\n")) {
+            throw new \InvalidArgumentException('Redirect URL must be an absolute HTTP URL.');
+        }
+
+        header('Location: ' . $url, true, 302);
+        exit;
+    }
 }

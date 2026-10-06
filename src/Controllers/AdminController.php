@@ -81,13 +81,15 @@ final class AdminController extends Controller
             'dueDate' => $invoice['due_date'],
         ], $payload['invoices']);
         $payload['transactions'] = $this->all(
-            'SELECT t.id, t.transaction_reference, t.paystack_reference, t.amount, t.status, t.channel, t.created_at, r.receipt_number FROM transactions t LEFT JOIN receipts r ON r.transaction_id = t.id WHERE t.student_id = ? ORDER BY t.created_at DESC',
+            'SELECT t.id, t.transaction_reference, t.paystack_reference, t.amount, t.status, t.channel, t.gateway, t.created_at, r.receipt_number FROM transactions t LEFT JOIN receipts r ON r.transaction_id = t.id WHERE t.student_id = ? ORDER BY t.created_at DESC',
             [$student['id']]
         );
         $payload['transactions'] = array_map(static fn (array $transaction): array => [
             'id' => 'txn_' . $transaction['id'],
             'reference' => $transaction['transaction_reference'],
             'paystackRef' => $transaction['paystack_reference'],
+            'gateway' => $transaction['gateway'] === 'TOKEN' ? 'Payment Token' : 'Paystack',
+            'paymentSource' => $transaction['gateway'],
             'receiptNumber' => $transaction['receipt_number'],
             'amount' => (float) $transaction['amount'],
             'status' => $transaction['status'],
@@ -130,7 +132,7 @@ final class AdminController extends Controller
         }
         $studentId = $this->newId();
         $this->run(
-            'INSERT INTO students (id, academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO students (id, academic_session_id, programme_id, registration_number, surname, first_name, other_names, email, phone, level, password_hash, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())',
             [$studentId, $session['id'], $programme['id'], trim($body['regNumber']), trim($body['surname']), trim($body['firstName']), trim((string) ($body['otherNames'] ?? '')) ?: null, strtolower(trim($body['email'])), trim((string) ($body['phone'] ?? '')) ?: null, trim($body['level']), password_hash((string) ($body['password'] ?? bin2hex(random_bytes(12))), PASSWORD_DEFAULT)]
         );
         $student = $this->findStudent($studentId);
@@ -766,7 +768,7 @@ final class AdminController extends Controller
             throw new HttpException('Selected payment type was not found.', 404);
         }
         $row = $this->one(
-            'SELECT t.id, t.transaction_reference, t.paystack_reference, t.amount, t.status, t.channel, t.created_at, s.id AS student_id, s.registration_number, s.first_name, s.other_names, s.surname, p.name AS payment_type_name, a.name AS session_name, r.receipt_number FROM transactions t JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id LEFT JOIN receipts r ON r.transaction_id = t.id WHERE p.id = ? AND (LOWER(t.transaction_reference) = LOWER(?) OR LOWER(t.paystack_reference) = LOWER(?) OR LOWER(r.receipt_number) = LOWER(?) OR LOWER(s.registration_number) = LOWER(?)) ORDER BY t.created_at DESC LIMIT 1',
+            'SELECT t.id, t.transaction_reference, t.paystack_reference, t.amount, t.status, t.channel, t.gateway, t.created_at, s.id AS student_id, s.registration_number, s.first_name, s.other_names, s.surname, p.name AS payment_type_name, a.name AS session_name, r.receipt_number FROM transactions t JOIN students s ON s.id = t.student_id JOIN invoices i ON i.id = t.invoice_id JOIN payment_types p ON p.id = i.payment_type_id JOIN academic_sessions a ON a.id = i.academic_session_id LEFT JOIN receipts r ON r.transaction_id = t.id WHERE p.id = ? AND (LOWER(t.transaction_reference) = LOWER(?) OR LOWER(t.paystack_reference) = LOWER(?) OR LOWER(r.receipt_number) = LOWER(?) OR LOWER(s.registration_number) = LOWER(?)) ORDER BY t.created_at DESC LIMIT 1',
             [$paymentTypeId, $query, $query, $query, $query]
         );
         if (!$row) {
@@ -776,6 +778,8 @@ final class AdminController extends Controller
             'id' => 'txn_' . $row['id'],
             'reference' => $row['transaction_reference'],
             'paystackRef' => $row['paystack_reference'],
+            'gateway' => $row['gateway'] === 'TOKEN' ? 'Payment Token' : 'Paystack',
+            'paymentSource' => $row['gateway'],
             'receiptNumber' => $row['receipt_number'],
             'studentId' => 'std_' . $row['student_id'],
             'studentName' => trim(implode(' ', array_filter([$row['first_name'], $row['other_names'], $row['surname']]))),
@@ -792,8 +796,8 @@ final class AdminController extends Controller
     public function reconciliation(Request $request, array $params, ?array $actor): array
     {
         $this->requireActor($actor, 'ADMIN');
-        $summary = $this->one("SELECT SUM(status = 'PAID') AS matched_count, SUM(status IN ('FAILED', 'REVERSED')) AS unmatched_count, SUM(status = 'PENDING') AS pending_count FROM transactions");
-        $rows = $this->all('SELECT transaction_reference, paystack_reference, amount, status, created_at FROM transactions ORDER BY created_at DESC LIMIT 500');
+        $summary = $this->one("SELECT SUM(status = 'PAID') AS matched_count, SUM(status IN ('FAILED', 'REVERSED')) AS unmatched_count, SUM(status = 'PENDING') AS pending_count FROM transactions WHERE gateway = 'PAYSTACK'");
+        $rows = $this->all("SELECT transaction_reference, paystack_reference, amount, status, created_at FROM transactions WHERE gateway = 'PAYSTACK' ORDER BY created_at DESC LIMIT 500");
         $records = array_map(static fn (array $row): array => [
             'reference' => $row['transaction_reference'],
             'paystackRef' => $row['paystack_reference'],

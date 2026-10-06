@@ -26,6 +26,14 @@ final class TransactionController extends Controller
                 $values[] = $value;
             }
         }
+        $paymentSource = strtoupper(trim((string) ($request->query['paymentSource'] ?? '')));
+        if ($paymentSource !== '' && $paymentSource !== 'ALL') {
+            if (!in_array($paymentSource, ['PAYSTACK', 'TOKEN'], true)) {
+                throw new HttpException('Invalid payment source filter.', 422);
+            }
+            $conditions[] = 't.gateway = ?';
+            $values[] = $paymentSource;
+        }
         foreach (['from' => '>=', 'to' => '<'] as $key => $operator) {
             $date = trim((string) ($request->query[$key] ?? ''));
             if ($date !== '') {
@@ -82,11 +90,12 @@ final class TransactionController extends Controller
             'paymentTypeName' => $row['payment_type_name'],
             'amount' => (float) $row['amount'],
             'session' => $row['session_name'],
-            'gateway' => 'Paystack',
+            'gateway' => $row['gateway'] === 'TOKEN' ? 'Payment Token' : 'Paystack',
+            'paymentSource' => $row['gateway'],
             'channel' => $row['channel'],
             'status' => $row['status'],
             'date' => $row['created_at'],
-            'verifiedBy' => $row['verified_at'] ? 'Paystack API' : null,
+            'verifiedBy' => !$row['verified_at'] ? null : ($row['gateway'] === 'TOKEN' ? 'Payment Token' : 'Paystack API'),
             'reconciled' => $row['reconciled_at'] !== null,
         ];
     }

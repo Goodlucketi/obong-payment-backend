@@ -45,8 +45,8 @@ Student registration does not require a registration number. When omitted, the A
 | POST | `/auth/student/login` | Student sign-in by email or registration number |
 | POST | `/auth/admin/login` | Administrator sign-in |
 | POST | `/auth/student/register` | Create a student account and initial invoices, then email a verification link |
-| GET | `/auth/student/verify-email?token={token}` | Verify a student's email address using the single-use link |
-| POST | `/auth/student/resend-verification` | Resend verification email; JSON body: `{ "email": "student@example.com" }` |
+| GET | `/auth/student/verify-email?token={token}` | Verify a student's email address (called by the frontend verification page); direct browser requests redirect to that page |
+| POST | `/auth/student/resend-verification` | Resend verification email; JSON body: `{ "email": "student@example.com" }`; sends to existing student addresses even if previously marked verified |
 | POST | `/auth/forgot-password` | Start password reset |
 | POST | `/auth/reset-password` | Complete password reset |
 | POST | `/auth/logout` | Revoke the current bearer token |
@@ -55,9 +55,10 @@ Student registration does not require a registration number. When omitted, the A
 | GET | `/student/invoices` | Current student's invoices |
 | GET | `/student/payment-summary` | Student payment totals |
 | POST | `/payments/initialize` | Validate invoice and initialize Paystack transaction |
+| POST | `/payments/redeem-token` | Student-only, one-time redemption of an admin-issued payment token; JSON body: `{ "token": "A7K9M2P4X8" }` (10 characters) |
 | GET | `/payments/verify/{reference}` | Verify reference server-to-server with Paystack; usable from the payment return page without a login session, using the unguessable transaction reference |
 | POST | `/payments/webhook` | Validate Paystack signature and process event idempotently |
-| GET | `/transactions` | Filter transaction list |
+| GET | `/transactions` | Filter transaction list; admins can use `paymentSource=PAYSTACK` or `paymentSource=TOKEN` |
 | GET | `/transactions/{reference}` | Transaction detail |
 | GET | `/receipts/{receiptOrReference}` | Authorized receipt lookup |
 | GET | `/public/verify-receipt?q={query}` | Limited public receipt verification |
@@ -77,23 +78,29 @@ Student registration does not require a registration number. When omitted, the A
 | PUT | `/payment-types/{id}` | Update payment type |
 | DELETE | `/payment-types/{id}` | Delete a payment type that has no issued invoices |
 | POST | `/admin/verify-payment` | Find a transaction by reference, receipt, or registration number |
+| POST | `/admin/payment-tokens` | Super-admin only; issue a single-use 7-day, 10-character token for an invoice amount. JSON body: `{ "invoice_id": "inv_<uuid>", "amount": 10000 }`; response includes the token (shown only once) and expiry |
 | GET | `/reconciliation` | Compare local transactions with Paystack |
 | GET | `/reports/summary` | Financial report aggregates |
+
+Transactions include `paymentSource` (`PAYSTACK` or `TOKEN`) and a display `gateway`, allowing administrators to distinguish Paystack payments from special payment-token redemptions. The transaction list accepts `paymentSource=PAYSTACK` or `paymentSource=TOKEN`; Paystack reconciliation includes Paystack transactions only.
+
+Token workflow: a super-admin calls `POST /admin/payment-tokens` with an invoice ID and amount, then gives the returned 10-character `data.token` to that student. The token is returned only once, stored as a hash, and expires after seven days. The student signs in and calls `POST /payments/redeem-token` with `{ "token": "A7K9M2P4X8" }`; the response includes `data.transaction`, `data.amountPaid`, `data.remainingBalance`, and `data.invoiceStatus`. A token is valid only for its assigned student and can be redeemed once. Token amounts can use special amounts that bypass the normal Paystack partial-payment rules, but cannot exceed the invoice's current outstanding balance. New receipt numbers are also 10 characters for easier verification; previously issued receipt numbers remain valid.
 
 ## XAMPP Setup
 
 1. Copy the project backend to `C:\xampp\htdocs\Obong_Payment\backend` so `backend/public/index.php` is inside Apache's document root.
 2. In `C:\xampp\apache\conf\httpd.conf`, ensure `mod_rewrite` is enabled and the `htdocs` directory allows overrides (`AllowOverride All`). Restart Apache after changing Apache configuration.
 3. In `C:\xampp\php\php.ini`, enable `extension=pdo_mysql` and confirm `extension_dir` points to PHP's `ext` directory. Restart Apache after changing PHP configuration.
-4. Copy `backend/.env.example` to `backend/.env`; set MySQL credentials and the Paystack test secret/public keys. Set `FRONTEND_URL` to the exact Vite origin in your browser (for example, `http://localhost:3000` or `http://127.0.0.1:3000`).
-   Configure email delivery with `API_PUBLIC_URL` (the public API base ending in `/api/v1`), `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_ENCRYPTION` (`starttls` or `ssl`), `MAIL_FROM_ADDRESS`, and optionally `MAIL_FROM_NAME`. Use a TLS-enabled SMTP account. Email verification links expire after 24 hours. Registration no longer returns an access token; the frontend should show the check-email message, and then offer resend verification.
+4. Copy `backend/.env.example` to `backend/.env`; set MySQL credentials and the Paystack test secret/public keys. Set `FRONTEND_URL` to the exact frontend origin (for example, `http://localhost:3000` or `https://payments.obonguniversity.com`).
+   Configure email delivery with `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_ENCRYPTION` (`starttls` or `ssl`), `MAIL_FROM_ADDRESS`, and optionally `MAIL_FROM_NAME`. Use a TLS-enabled SMTP account. Email verification links open the frontend verification page, which verifies the token and provides a sign-in link. Verification links expire after 24 hours. Registration no longer returns an access token; the frontend should show the check-email message, and then offer resend verification.
 5. Start MySQL in the XAMPP Control Panel. In phpMyAdmin, create a database, select it, then import `backend/database/schema.sql`; the schema intentionally does not create or select a database. Then add the university's faculties, departments, active academic session, payment types, and initial administrator account. When inserting records manually, generate IDs with `UUID()`, for example `INSERT INTO academic_sessions (id, name, starts_on, ends_on, status) VALUES (UUID(), '2026/2027', '2026-09-01', '2027-08-31', 'ACTIVE');`.
+   For an existing database, apply the new migrations in `backend/database/migrations/`, including `20261006_add_payment_tokens.sql`, before using payment-token endpoints.
 6. Copy the repository's `.env.local.example` to `.env.local` and set `VITE_API_URL=http://localhost/Obong_Payment/backend/public/api/v1` (adjust `Obong_Payment` if the XAMPP folder has a different name).
 7. From the project root, run `npm run dev`. The frontend runs at Vite's local URL and calls the XAMPP API. To verify Apache routing, open `http://localhost/Obong_Payment/backend/public/health`; it should return JSON with `status: success`.
 
 The API also works with PHP's built-in server: `php -S 127.0.0.1:8000 -t backend/public backend/public/index.php`, with `VITE_API_URL=http://127.0.0.1:8000/api/v1`.
 
-For an existing database, back it up and run `database/migrations/20261005_add_student_email_verification.sql` once before deploying the updated API; this marks existing student accounts verified and creates the verification-token table. Fresh installations get the same schema from `database/schema.sql`. Check route/controller wiring with `php backend/tests/check-route-map.php`; lint PHP with `php -l` on the backend files. Authentication, role checks, password hashing, email verification via SMTP, server-side Paystack initialization/verification, webhook signature validation, transaction settlement, and receipt issuance are implemented. Before production, verify student registrations against the Registrar's authoritative roster; password reset delivery still needs an email provider, and reconciliation currently summarizes local states rather than re-verifying every transaction with Paystack. Exercise all financial/admin paths against configured MySQL and Paystack test accounts before production use.
+For an existing database, run `database/migrations/20261005_add_student_email_verification.sql` once if the verification schema has not already been installed, then run `database/migrations/20261005_fix_email_verification_delivery.sql` once. The first migration marks existing student accounts verified for compatibility; the resend endpoint can still send them a verification link. Fresh installations get the corrected nullable verification default and sent-time tracking from `database/schema.sql`. Check route/controller wiring with `php backend/tests/check-route-map.php`; lint PHP with `php -l` on the backend files. Authentication, role checks, password hashing, email verification via SMTP, server-side Paystack initialization/verification, webhook signature validation, transaction settlement, and receipt issuance are implemented. Before production, verify student registrations against the Registrar's authoritative roster; password reset delivery still needs an email provider, and reconciliation currently summarizes local states rather than re-verifying every transaction with Paystack. Exercise all financial/admin paths against configured MySQL and Paystack test accounts before production use.
 
 This project uses `database/schema.sql` as the single database setup script for a fresh install. It creates the complete UUID-based schema, including faculty/department fee scopes and department-level fee schedules, in the currently selected database. On shared hosting, create the database in the hosting control panel, select it in phpMyAdmin, and import the script; database users commonly cannot run `CREATE DATABASE`. Set `DB_DATABASE` in the server environment to the exact database name shown by the host (including any account prefix), and set `DB_USERNAME` and `DB_PASSWORD` to the assigned database user's credentials. **Do not import it over a database containing data:** create a new database or back up and intentionally replace the old one first. Existing databases with numeric IDs are not migrated by this setup.
 

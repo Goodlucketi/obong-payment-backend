@@ -38,9 +38,11 @@ $criticalFlowRoutes = [
     ['POST', '/api/v1/auth/student/resend-verification', 'AuthController@resendStudentEmailVerification'],
     ['POST', '/api/v1/auth/student/login', 'AuthController@studentLogin'],
     ['POST', '/api/v1/payments/initialize', 'PaymentController@initialize'],
+    ['POST', '/api/v1/payments/redeem-token', 'PaymentController@redeemToken'],
     ['GET', '/api/v1/payments/verify/{reference}', 'PaymentController@verify'],
     ['GET', '/api/v1/transactions/{reference}', 'TransactionController@show'],
     ['GET', '/api/v1/receipts/{receiptOrReference}', 'ReceiptController@show'],
+    ['POST', '/api/v1/admin/payment-tokens', 'PaymentController@createToken'],
 ];
 foreach ($criticalFlowRoutes as [$method, $path, $handler]) {
     $matches = array_values(array_filter(
